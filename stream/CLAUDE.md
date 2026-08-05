@@ -144,7 +144,37 @@ Keep those when restyling; they are the suite's only stable hook.
 
 ### Diagram
 
-`layoutGraph` ranks nodes into columns by longest path **after cutting back edges**. Do not
-"simplify" that away: relaxing over a loop adds a column per pass, and since a howling setup is
-the normal input here, a four-node document rendered ~5000px wide before it was fixed. The
-regression test asserts `columns <= nodes.length`.
+`layoutGraph` is a four-stage Sugiyama pipeline: rank into columns, insert a dummy per column a
+long edge crosses, order the rows (median heuristic), assign y. The component draws the
+`points` it is handed and owns no geometry.
+
+Ranking is longest path **after cutting back edges**. Do not "simplify" that away: relaxing over
+a loop adds a column per pass, and since a howling setup is the normal input here, a four-node
+document rendered ~5000px wide before it was fixed. The regression test asserts
+`columns <= nodes.length`, and `linter.spec.ts` asserts the rendered width from the browser.
+
+Two properties exist for the phases after this one, and both have tests:
+
+- **Ports are first class.** A cable ends at a jack. Anchors come from the model's `ports` order,
+  never from which links exist, so drawing a new cable cannot move anchors already on screen —
+  the precondition for visual wiring. `LayoutEdge` carries `linkId`, and the SVG carries
+  `data-node-key` / `data-port-key` / `data-link-id`, which is the hit-testing hook.
+- **Small edits move the picture a little.** Every stage is deterministic, ties break on the
+  incoming order, and `options.order` seeds the row ordering with a previous `Layout.order`.
+  Plain barycenter/median without that seed reshuffles a column when one link is added, which
+  makes live AI visualisation unreadable. Pass the seed when re-laying out an edited document.
+
+Three edge kinds are treated differently on purpose. `internal` is not drawn at all — it lives
+inside one box and the routing matrix is the honest view of it. `space` is not a cable, so it
+collapses to one edge per box pair and anchors on the box, not on a jack; that is what keeps a
+room from growing a fan of lines. `cable` and `host` draw one line per link.
+
+Diagonals only ever occur in the gap between two columns, and a gap holds no boxes — that
+invariant is what the "routes clear of the boxes" test checks by sampling along each segment.
+Host links run out→out or in→in, so one end sits on the wrong face of its box; those loop around
+the box rather than have the jack drawn on a side it does not belong on. Back edges get a lane
+under the diagram, one per edge.
+
+Still open: identical devices can land in different columns, because which edge gets cut depends
+on DFS order (in the mixed audio/video fixture one handheld mic ranks at column 0 and its twin at
+column 4). Deterministic, but asymmetric.
