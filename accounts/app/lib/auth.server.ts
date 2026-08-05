@@ -84,6 +84,7 @@ function buildAuth(env: Env) {
     env.IMG_CLIENT_ID,
     env.SCHEDULER_CLIENT_ID,
     env.SNS_CLIENT_ID,
+    env.STREAM_CLIENT_ID,
   ].filter(Boolean);
 
   return betterAuth({

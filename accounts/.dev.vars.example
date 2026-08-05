@@ -1,5 +1,11 @@
 # Secrets — set as production secrets with `wrangler secret put <NAME>`.
 GOOGLE_CLIENT_SECRET=""
+# Optional — sign in against your own Google Cloud project instead of the
+# production one. .dev.vars overrides the GOOGLE_CLIENT_ID in wrangler.toml's
+# [vars], so set both values together. The OAuth client must be a Web
+# application with http://localhost:5173/oauth/google/callback as an authorized
+# redirect URI.
+#GOOGLE_CLIENT_ID=""
 # Better Auth encryption/signing key. Generate with e.g. `openssl rand -base64 48`.
 BETTER_AUTH_SECRET=""
 
@@ -10,6 +16,7 @@ WIKI_CLIENT_SECRET=""
 IMG_CLIENT_SECRET=""
 SCHEDULER_CLIENT_SECRET=""
 SNS_CLIENT_SECRET=""
+STREAM_CLIENT_SECRET=""
 
 # Override prod URLs from wrangler.toml so dev runs the IdP at localhost.
 APP_URL=http://localhost:5173
@@ -21,5 +28,6 @@ IMG_REDIRECT_URLS=http://localhost:5175/api/auth/callback/gdgjp
 SCHEDULER_REDIRECT_URLS=http://localhost:5176/api/auth/callback/gdgjp
 WIKI_REDIRECT_URLS=http://localhost:5177/api/auth/callback/gdgjp
 SNS_REDIRECT_URLS=http://localhost:5178/api/auth/callback/gdgjp
+STREAM_REDIRECT_URLS=http://localhost:5179/api/auth/callback/gdgjp
 
 RESEND_API_KEY=""

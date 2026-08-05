@@ -79,6 +79,7 @@ function collectSpecs(env: Env): ClientSpec[] {
       env.SCHEDULER_REDIRECT_URLS,
     ],
     ["SNS Manager", env.SNS_CLIENT_ID, env.SNS_CLIENT_SECRET, env.SNS_REDIRECT_URLS],
+    ["GDG Japan Stream", env.STREAM_CLIENT_ID, env.STREAM_CLIENT_SECRET, env.STREAM_REDIRECT_URLS],
   ] as const;
   return apps.flatMap(([clientName, clientId, clientSecret, redirectUrls]) =>
     clientId

@@ -5,6 +5,7 @@ packages:
   - "img"
   - "scheduler"
   - "sns"
+  - "stream"
   - "website"
   - "tinyurl-gateway"
   - "go-extension"
