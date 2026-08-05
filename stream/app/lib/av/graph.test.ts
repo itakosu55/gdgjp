@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { testContext } from "./fixtures";
-import { buildGraph, portVertexId, spaceVertexId } from "./graph";
-import type { SetupDoc } from "./schema";
+import {
+  buildGraph,
+  isHostAssignment,
+  orientHostAssignment,
+  portVertexId,
+  spaceVertexId,
+} from "./graph";
+import type { PortRef, SetupDoc } from "./schema";
 
 const HALL = { id: "sp_hall", kind: "acoustic", label: "メインホール" } as const;
 
@@ -163,5 +169,78 @@ describe("signal media", () => {
     });
 
     expect(graph.issues).toContainEqual({ kind: "link-media-mismatch", linkId: "l1" });
+  });
+});
+
+// `links` carries two relationships that behave nothing alike, and the editor
+// has to tell them apart to stop asking people to know the out→out rule.
+describe("telling a device selection from a cable", () => {
+  const setup = doc({
+    nodes: [
+      { id: "n_mixer", deviceId: "d_mixer" },
+      { id: "n_pc", deviceId: "d_pc" },
+      { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+    ],
+    links: [
+      { id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+      { id: "l2", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_in"] },
+      { id: "l3", from: ["n_obs", "monitor_out"], to: ["n_pc", "headphone_out"] },
+    ],
+  });
+
+  it("calls a cable a cable", () => {
+    const cable = setup.links.find((link) => link.id === "l1");
+    expect(cable && isHostAssignment(setup, cable)).toBe(false);
+  });
+
+  it("recognises a selection whichever way round the link is stored", () => {
+    for (const id of ["l2", "l3"]) {
+      const link = setup.links.find((entry) => entry.id === id);
+      expect(link && isHostAssignment(setup, link)).toBe(true);
+    }
+  });
+
+  it("does not mistake two unrelated nodes for a host pair", () => {
+    const unrelated = doc({
+      nodes: [
+        { id: "n_mixer", deviceId: "d_mixer" },
+        { id: "n_pc", deviceId: "d_pc" },
+      ],
+      links: [{ id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] }],
+    });
+    const link = unrelated.links[0];
+    expect(link && isHostAssignment(unrelated, link)).toBe(false);
+  });
+});
+
+describe("orienting a device selection", () => {
+  const app = ["n_obs", "audio_in"] as PortRef;
+  const host = ["n_pc", "usb_in"] as PortRef;
+
+  // An app capturing from a jack: the signal runs host → app.
+  it("points a capture at the app", () => {
+    const oriented = orientHostAssignment(
+      { ref: app, direction: "in" },
+      { ref: host, direction: "in" },
+    );
+    expect(oriented).toEqual({ from: host, to: app });
+  });
+
+  // An app playing into a jack: the signal runs app → host.
+  it("points playback at the host", () => {
+    const oriented = orientHostAssignment(
+      { ref: ["n_obs", "monitor_out"], direction: "out" },
+      { ref: ["n_pc", "headphone_out"], direction: "out" },
+    );
+    expect(oriented).toEqual({
+      from: ["n_obs", "monitor_out"],
+      to: ["n_pc", "headphone_out"],
+    });
+  });
+
+  it("refuses a pair whose directions disagree", () => {
+    expect(
+      orientHostAssignment({ ref: app, direction: "in" }, { ref: host, direction: "out" }),
+    ).toBeNull();
   });
 });

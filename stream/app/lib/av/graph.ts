@@ -1,5 +1,5 @@
-import type { SetupDoc, SetupNode, Space } from "./schema";
-import type { Device, DeviceModel, DeviceModelPort, Medium } from "./types";
+import type { PortRef, SetupDoc, SetupLink, SetupNode, Space } from "./schema";
+import type { Device, DeviceModel, DeviceModelPort, Medium, PortDirection } from "./types";
 import { CATEGORY_SPACE_COUPLING, portMedia } from "./types";
 
 /**
@@ -377,7 +377,42 @@ function buildSpaceEdges(
   return edges;
 }
 
-/** Every port vertex of a node matching `direction` that carries `medium`. */
+/**
+ * Is this link a device selection rather than a cable?
+ *
+ * `links` carries two relationships that behave nothing alike. A cable runs
+ * output → input, physically exists, and someone can unplug it. A link between
+ * an app and the computer it runs on is a setting — which device OBS captures
+ * from, which device it monitors on — and runs out→out or in→in. The editor
+ * has to tell them apart to stop asking people to know that rule.
+ */
+export function isHostAssignment(doc: SetupDoc, link: SetupLink): boolean {
+  const from = doc.nodes.find((node) => node.id === link.from[0]);
+  const to = doc.nodes.find((node) => node.id === link.to[0]);
+  if (!from || !to) return false;
+  return from.hostNodeId === to.id || to.hostNodeId === from.id;
+}
+
+/**
+ * Orders the two ends of a device selection into a link.
+ *
+ * An app reading from a jack and an app playing into one are the same
+ * relationship pointing opposite ways, and `buildLinkEdges` can only tell them
+ * apart once they are oriented. Deriving the order from the port directions is
+ * what lets a form ask "which jack does this app use" instead of asking someone
+ * to remember that this one case runs out→out.
+ */
+export function orientHostAssignment(
+  app: { ref: PortRef; direction: PortDirection },
+  host: { ref: PortRef; direction: PortDirection },
+): { from: PortRef; to: PortRef } | null {
+  if (app.direction !== host.direction) return null;
+  return app.direction === "out"
+    ? { from: app.ref, to: host.ref }
+    : { from: host.ref, to: app.ref };
+}
+
+/** Every port vertex of a node matching `medium` and `direction`. */
 export function portVertices(
   resolved: ResolvedNode,
   direction: "in" | "out",

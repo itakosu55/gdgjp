@@ -7,13 +7,13 @@ import { Input } from "~/components/ui/input";
 import { Textarea } from "~/components/ui/textarea";
 import { requireUser } from "~/lib/auth-redirect.server";
 import type { Fix } from "~/lib/av/diagnostics";
-import { buildGraph } from "~/lib/av/graph";
+import { buildGraph, isHostAssignment, orientHostAssignment } from "~/lib/av/graph";
 import { COUPLING_LABELS, SPACE_KIND_LABELS, entries } from "~/lib/av/labels";
 import { layoutGraph } from "~/lib/av/layout";
 import { lint } from "~/lib/av/lint";
 import { applyFix, applyOperation, defaultRoutesFor } from "~/lib/av/mutations";
 import { safeParseSetupDoc } from "~/lib/av/schema";
-import type { SetupDoc } from "~/lib/av/schema";
+import type { PortRef, SetupDoc } from "~/lib/av/schema";
 import type { DeviceModel } from "~/lib/av/types";
 import {
   getEvent,
@@ -173,6 +173,55 @@ export async function action(args: Route.ActionArgs) {
             ),
             from,
             to,
+          },
+        }),
+      );
+    }
+
+    // Kept apart from `add-link` on purpose: a device selection is not a cable,
+    // and its direction follows from the two ports rather than from the user.
+    case "add-assignment": {
+      const app = splitPortRef(form.get("app"));
+      const host = splitPortRef(form.get("host"));
+      if (!app || !host) return { error: "アプリ側と PC 側のポートを選んでください。" };
+
+      const appNode = doc.nodes.find((node) => node.id === app[0]);
+      if (!appNode || appNode.hostNodeId !== host[0]) {
+        return { error: "選んだ PC は、このアプリのホストではありません。" };
+      }
+
+      const [devices, models] = await Promise.all([loadDevices(env.DB), listModels(env.DB)]);
+      const directionOf = (ref: PortRef) => {
+        const node = doc.nodes.find((entry) => entry.id === ref[0]);
+        const device = node ? devices.get(node.deviceId) : undefined;
+        const model = device ? models.find((entry) => entry.id === device.modelId) : undefined;
+        return model?.ports.find((port) => port.key === ref[1])?.direction;
+      };
+
+      const appDirection = directionOf(app);
+      const hostDirection = directionOf(host);
+      if (!appDirection || !hostDirection) return { error: "ポートが見つかりません。" };
+
+      const oriented = orientHostAssignment(
+        { ref: app, direction: appDirection },
+        { ref: host, direction: hostDirection },
+      );
+      if (!oriented) {
+        return {
+          error:
+            "入出力の向きが揃っていません。アプリの入力には PC の入力を、アプリの出力には PC の出力を選んでください。",
+        };
+      }
+
+      return save(
+        applyOperation(doc, {
+          kind: "add-link",
+          link: {
+            id: newDocId(
+              "l",
+              doc.links.map((link) => link.id),
+            ),
+            ...oriented,
           },
         }),
       );
@@ -561,90 +610,209 @@ function DevicesTab({
   );
 }
 
+/**
+ * Cables and device selections, kept in separate tables.
+ *
+ * They were one list, which is why the form used to carry a caveat about
+ * out→out being correct "only between an app and its host PC". A caveat like
+ * that is the sign of two relationships wearing one name: a cable physically
+ * exists and someone can unplug it, while a device selection is a dropdown in
+ * OBS. Splitting them lets each have its own vocabulary, and lets the app
+ * derive the direction instead of explaining it.
+ */
 function LinksTab({ doc, nodeInfo }: { doc: SetupDoc; nodeInfo: NodeInfo[] }) {
-  const options = nodeInfo.flatMap((info) =>
+  const assignments = doc.links.filter((link) => isHostAssignment(doc, link));
+  const cables = doc.links.filter((link) => !isHostAssignment(doc, link));
+
+  const portOptions = (filter: (port: DeviceModel["ports"][number]) => boolean) =>
+    nodeInfo.flatMap((info) =>
+      (info.model?.ports ?? []).filter(filter).map((port) => ({
+        value: `${info.node.id}::${port.key}`,
+        label: `${info.label} / ${port.label}`,
+      })),
+    );
+  const outputs = portOptions((port) => port.direction === "out");
+  const inputs = portOptions((port) => port.direction === "in");
+
+  const hosted = nodeInfo.filter((info) => info.node.hostNodeId);
+  const appPorts = hosted.flatMap((info) =>
     (info.model?.ports ?? []).map((port) => ({
       value: `${info.node.id}::${port.key}`,
       label: `${info.label} / ${port.label} (${port.direction === "out" ? "出力" : "入力"})`,
     })),
   );
+  const hostIds = new Set(hosted.map((info) => info.node.hostNodeId));
+  const hostPorts = nodeInfo
+    .filter((info) => hostIds.has(info.node.id))
+    .map((info) => ({
+      label: info.label,
+      ports: (info.model?.ports ?? []).map((port) => ({
+        value: `${info.node.id}::${port.key}`,
+        label: `${port.label} (${port.direction === "out" ? "出力" : "入力"})`,
+      })),
+    }));
 
   return (
     <div className="grid gap-8 lg:grid-cols-[1fr_320px]">
-      <section>
-        <h2 className="mb-3 text-sm font-semibold">結線</h2>
-        {doc.links.length === 0 ? (
-          <EmptyState>結線がまだありません。</EmptyState>
-        ) : (
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2">ID</th>
-                  <th className="px-3 py-2">接続元</th>
-                  <th className="px-3 py-2">接続先</th>
-                  <th className="px-3 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {doc.links.map((link) => (
-                  <tr key={link.id} className="border-t">
-                    <td className="px-3 py-2 font-mono text-xs">{link.id}</td>
-                    <td className="px-3 py-2">{describePort(nodeInfo, link.from)}</td>
-                    <td className="px-3 py-2">{describePort(nodeInfo, link.to)}</td>
-                    <td className="px-3 py-2 text-right">
-                      <Form method="post">
-                        <input type="hidden" name="intent" value="remove-link" />
-                        <input type="hidden" name="linkId" value={link.id} />
-                        <button
-                          type="submit"
-                          className="text-xs text-muted-foreground hover:text-destructive"
-                        >
-                          削除
-                        </button>
-                      </Form>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      <div className="flex flex-col gap-8">
+        <section>
+          <h2 className="mb-1 text-sm font-semibold">ケーブル</h2>
+          <p className="mb-3 text-xs text-muted-foreground">
+            物理的に挿さっているもの。出力から入力へ流れます。
+          </p>
+          {cables.length === 0 ? (
+            <EmptyState>ケーブルがまだありません。</EmptyState>
+          ) : (
+            <LinkTable
+              links={cables}
+              headings={["接続元", "接続先"]}
+              cells={(link) => [describePort(nodeInfo, link.from), describePort(nodeInfo, link.to)]}
+            />
+          )}
+        </section>
 
-      <section className="rounded-lg border p-4">
-        <h2 className="mb-3 text-sm font-semibold">結線を追加</h2>
-        {options.length === 0 ? (
-          <p className="text-sm text-muted-foreground">先に機材を追加してください。</p>
-        ) : (
-          <Form method="post" className="flex flex-col gap-3">
-            <input type="hidden" name="intent" value="add-link" />
-            <Field label="接続元" htmlFor="linkFrom">
-              <select id="linkFrom" name="from" required className={selectClassName}>
-                {options.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field
-              label="接続先"
-              htmlFor="linkTo"
-              hint="通常は 出力 → 入力 です。ソフトとホスト PC の間だけは 出力 → 出力 / 入力 → 入力 が正しくなります。"
-            >
-              <select id="linkTo" name="to" required className={selectClassName}>
-                {options.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Button type="submit">追加</Button>
-          </Form>
-        )}
-      </section>
+        <section>
+          <h2 className="mb-1 text-sm font-semibold">アプリの入出力割り当て</h2>
+          <p className="mb-3 text-xs text-muted-foreground">
+            ケーブルではなく、アプリがホスト PC のどのデバイスを使うかの設定です。
+          </p>
+          {assignments.length === 0 ? (
+            <EmptyState>割り当てがまだありません。</EmptyState>
+          ) : (
+            <LinkTable
+              links={assignments}
+              headings={["アプリ側", "PC 側"]}
+              cells={(link) => {
+                const appFirst = doc.nodes.find((node) => node.id === link.from[0])?.hostNodeId;
+                const app = appFirst ? link.from : link.to;
+                const host = appFirst ? link.to : link.from;
+                return [describePort(nodeInfo, app), describePort(nodeInfo, host)];
+              }}
+            />
+          )}
+        </section>
+      </div>
+
+      <div className="flex flex-col gap-4">
+        <section className="rounded-lg border p-4">
+          <h2 className="mb-3 text-sm font-semibold">ケーブルを追加</h2>
+          {outputs.length === 0 || inputs.length === 0 ? (
+            <p className="text-sm text-muted-foreground">先に機材を追加してください。</p>
+          ) : (
+            <Form method="post" className="flex flex-col gap-3">
+              <input type="hidden" name="intent" value="add-link" />
+              <Field label="接続元 (出力)" htmlFor="linkFrom">
+                <select id="linkFrom" name="from" required className={selectClassName}>
+                  {outputs.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="接続先 (入力)" htmlFor="linkTo">
+                <select id="linkTo" name="to" required className={selectClassName}>
+                  {inputs.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Button type="submit">追加</Button>
+            </Form>
+          )}
+        </section>
+
+        <section className="rounded-lg border p-4">
+          <h2 className="mb-3 text-sm font-semibold">割り当てを追加</h2>
+          {appPorts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              先にホスト PC を指定したアプリを追加してください。
+            </p>
+          ) : (
+            <Form method="post" className="flex flex-col gap-3">
+              <input type="hidden" name="intent" value="add-assignment" />
+              <Field label="アプリ側のポート" htmlFor="assignApp">
+                <select id="assignApp" name="app" required className={selectClassName}>
+                  {appPorts.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field
+                label="PC 側のデバイス"
+                htmlFor="assignHost"
+                hint="入力には入力を、出力には出力を選びます。向きは自動で決まります。"
+              >
+                <select id="assignHost" name="host" required className={selectClassName}>
+                  {hostPorts.map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.ports.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </Field>
+              <Button type="submit">追加</Button>
+            </Form>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function LinkTable({
+  links,
+  headings,
+  cells,
+}: {
+  links: SetupDoc["links"];
+  headings: [string, string];
+  cells: (link: SetupDoc["links"][number]) => [string, string];
+}) {
+  return (
+    <div className="overflow-x-auto rounded-lg border">
+      <table className="w-full text-sm">
+        <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+          <tr>
+            <th className="px-3 py-2">ID</th>
+            <th className="px-3 py-2">{headings[0]}</th>
+            <th className="px-3 py-2">{headings[1]}</th>
+            <th className="px-3 py-2" />
+          </tr>
+        </thead>
+        <tbody>
+          {links.map((link) => {
+            const [left, right] = cells(link);
+            return (
+              <tr key={link.id} className="border-t">
+                <td className="px-3 py-2 font-mono text-xs">{link.id}</td>
+                <td className="px-3 py-2">{left}</td>
+                <td className="px-3 py-2">{right}</td>
+                <td className="px-3 py-2 text-right">
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="remove-link" />
+                    <input type="hidden" name="linkId" value={link.id} />
+                    <button
+                      type="submit"
+                      className="text-xs text-muted-foreground hover:text-destructive"
+                    >
+                      削除
+                    </button>
+                  </Form>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

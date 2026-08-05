@@ -90,6 +90,24 @@ per-model-with-quantity is a prerequisite for the future double-booking rule; do
 `setups` means *alternatives that are mutually exclusive in time* ("本番" / "リハ"). Simultaneous
 tracks are a different axis — see design doc §8 before adding one.
 
+## Two things `links` means
+
+A cable runs output → input, physically exists, and someone can unplug it. A link between an app
+and the computer it runs on is a device selection — which input OBS captures from, which output
+it monitors on — and runs out→out or in→in. `buildLinkEdges` orients both; `isHostAssignment`
+tells them apart from the document alone, and `orientHostAssignment` derives the direction from
+the two port directions.
+
+The editor keeps them in separate tables with separate forms, and the cable form offers only
+outputs as a source and only inputs as a destination. It used to be one form whose hint had to
+say "out→out is correct between an app and its host PC" — a caveat like that is the sign of two
+relationships wearing one name. The assignment form never asks which way round the link goes.
+
+The long-term fix is to move assignments out of `links` and onto the node
+(`assignments: { port, hostPort }[]`), so `links` means only cables and the AI phase never has to
+be taught the out→out rule. That is a schema change, so it should ride along the next one rather
+than happen alone.
+
 ## Routes
 
 Flat RR7 framework-mode in `app/routes.ts`.

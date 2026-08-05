@@ -1,5 +1,6 @@
+import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import { diagnostic, ruleIds } from "./helpers";
+import { diagnostic, fillSetupDoc, ruleIds } from "./helpers";
 import { setupUrl } from "./seed-data";
 
 /**
@@ -72,15 +73,73 @@ test.describe("building a setup from scratch", () => {
     await expect(row).toContainText("E2E ミキサー");
   });
 
-  test("a mis-wired cable is reported rather than silently accepted", async ({ page }) => {
+  // The cable form used to accept any pair of ports and lean on the linter to
+  // complain. It now cannot express an output-to-output cable at all — the case
+  // that needed the "except between an app and its host" caveat.
+  test("the cable form offers only inputs as a destination", async ({ page }) => {
     await page.goto(setupUrl("e2e_setup_editing", "links"));
 
-    // Output to output between devices with no host relationship.
-    await page.locator("#linkFrom").selectOption("n1::out");
-    await page.locator("#linkTo").selectOption("n2::main_out");
-    await page.getByRole("button", { name: "追加" }).click();
+    const values = await page
+      .locator("#linkTo option")
+      .evaluateAll((options) => options.map((option) => option.getAttribute("value")));
+    expect(values).toContain("n2::ch1");
+    expect(values).not.toContain("n2::main_out");
+  });
+
+  // Prevention in the form is not detection: a document can also arrive by
+  // paste, and will arrive from the AI phase.
+  test("a mis-wired cable that arrives another way is still reported", async ({ page }) => {
+    await page.goto(setupUrl("e2e_setup_editing", "json"));
+
+    const doc = {
+      schemaVersion: 1,
+      spaces: [],
+      nodes: [
+        { id: "n1", deviceId: "e2e_dev_mic" },
+        { id: "n2", deviceId: "e2e_dev_mixer" },
+      ],
+      // Output to output between devices with no host relationship.
+      links: [{ id: "l_bad", from: ["n1", "out"], to: ["n2", "main_out"] }],
+      routing: [],
+    };
+    await fillSetupDoc(page, JSON.stringify(doc, null, 2));
+    await page.getByRole("button", { name: "この内容で置き換える" }).click();
 
     await expect(diagnostic(page, "link-direction")).toBeVisible();
+  });
+});
+
+/**
+ * `links` carries two relationships that behave nothing alike: a cable someone
+ * can unplug, and a dropdown in OBS. Read-only, so it shares the howling
+ * fixture with everyone else.
+ */
+test.describe("cables and device selections", () => {
+  const section = (page: Page, heading: string) =>
+    page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: heading, exact: true }) });
+
+  test("are listed in separate tables", async ({ page }) => {
+    await page.goto(setupUrl("e2e_setup_howling", "links"));
+
+    const cables = section(page, "ケーブル");
+    const assignments = section(page, "アプリの入出力割り当て");
+
+    // l3 is a real cable: the mixer's USB send into the PC.
+    await expect(cables.getByRole("row").filter({ hasText: "l3" })).toBeVisible();
+    // l4 is OBS picking that USB input as its audio source.
+    await expect(assignments.getByRole("row").filter({ hasText: "l4" })).toBeVisible();
+    await expect(cables.getByRole("row").filter({ hasText: "l4" })).toHaveCount(0);
+  });
+
+  test("the assignment form never asks which way round the link goes", async ({ page }) => {
+    await page.goto(setupUrl("e2e_setup_howling", "links"));
+
+    await expect(page.locator("#assignApp")).toBeVisible();
+    await expect(page.locator("#assignHost")).toBeVisible();
+    // The caveat the old single form had to carry.
+    await expect(page.getByText(/出力 → 出力/)).toHaveCount(0);
   });
 });
 
@@ -103,7 +162,7 @@ test.describe("the JSON tab", () => {
   test("rejects text that is not JSON", async ({ page }) => {
     await page.goto(url);
 
-    await page.locator("textarea[name=doc]").fill("{ not json");
+    await fillSetupDoc(page, "{ not json");
     await page.getByRole("button", { name: "この内容で置き換える" }).click();
 
     await expect(page.getByText("JSON として読み取れません。")).toBeVisible();
@@ -112,7 +171,7 @@ test.describe("the JSON tab", () => {
   test("rejects JSON that does not match the schema", async ({ page }) => {
     await page.goto(url);
 
-    await page.locator("textarea[name=doc]").fill('{"schemaVersion": 99}');
+    await fillSetupDoc(page, '{"schemaVersion": 99}');
     await page.getByRole("button", { name: "この内容で置き換える" }).click();
 
     await expect(page.getByText(/スキーマに適合しません/)).toBeVisible();
@@ -136,7 +195,7 @@ test.describe("the JSON tab", () => {
       routing: [{ nodeId: "n2", inPort: "ch1", bus: "main" }],
     };
 
-    await page.locator("textarea[name=doc]").fill(JSON.stringify(doc));
+    await fillSetupDoc(page, JSON.stringify(doc));
     await page.getByRole("button", { name: "この内容で置き換える" }).click();
 
     // A document can arrive from anywhere — another event, a prompt — and the
