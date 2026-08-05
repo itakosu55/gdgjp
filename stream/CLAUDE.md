@@ -148,10 +148,39 @@ Keep those when restyling; they are the suite's only stable hook.
 long edge crosses, order the rows (median heuristic), assign y. The component draws the
 `points` it is handed and owns no geometry.
 
-Ranking is longest path **after cutting back edges**. Do not "simplify" that away: relaxing over
-a loop adds a column per pass, and since a howling setup is the normal input here, a four-node
-document rendered ~5000px wide before it was fixed. The regression test asserts
-`columns <= nodes.length`, and `linter.spec.ts` asserts the rendered width from the browser.
+Ranking is longest path **after cutting back edges**, constrained by role. Do not "simplify" the
+cutting away: relaxing over a loop adds a column per pass, and since a howling setup is the
+normal input here, a four-node document rendered ~5000px wide before it was fixed. The
+regression test asserts `columns <= nodes.length`, and `linter.spec.ts` asserts the rendered
+width from the browser.
+
+`CATEGORY_ROLE` in `layout.ts` sorts each category into `input` / `hub` / `output`, which is what
+gives the diagram its left-to-right bands. Two rules implement it: every edge arriving at an
+input is cut before the loop search runs, and outputs get a rank floor one past the deepest
+non-output. Rooms carry no role — a room lands wherever what feeds it puts it, which is just
+past the speakers, so the rightmost box is usually the room.
+
+The role constraint is also what makes the layout *fair*: with pure longest path, which edge got
+cut to break a loop depended on the order the search visited nodes, so two identical mics could
+land in different columns. Cutting by rule instead of by search order puts them together.
+
+A software node sits in **the same column as the computer it runs on** (`pinToHosts`), and the
+row order and y assignment both put it directly under its host. An app is inside the machine, not
+another stage of the chain — ranking OBS by where the signal reaches put it out among the
+speakers. Role still wins over the host pin, which is what keeps a conferencing app on the left.
+The host link then runs inside the column and `routeSibling` draws it as a short connector down
+the side, not as a return path.
+
+Bands come from `computeBands`: a run of columns sharing a role, emitted as a tint the component
+captions 入力 / 中間 / 出力 / 空間. Deliberately a tint and not a frame around the group — position
+already carries the role, a frame implies a containment that is not there, and the border
+vocabulary is already spoken for (solid device, dashed room).
+
+`software_conferencing` is classified as an **input** on purpose. It is genuinely both — a remote
+speaker arrives through it and the local mix is sent back out of it — and classifying it this way
+means the send to the remote participant becomes a return path under the diagram. That is a
+deliberate reading ("a remote participant is someone talking into the room"), not an oversight;
+Mix-Minus is still detected by `lint`, which does not care about layout.
 
 Two properties exist for the phases after this one, and both have tests:
 
@@ -168,6 +197,14 @@ Three edge kinds are treated differently on purpose. `internal` is not drawn at 
 inside one box and the routing matrix is the honest view of it. `space` is not a cable, so it
 collapses to one edge per box pair and anchors on the box, not on a jack; that is what keeps a
 room from growing a fan of lines. `cable` and `host` draw one line per link.
+
+**The danger colour belongs to the linter, not to the layout.** The diagram draws in red only the
+graph edges passed in as `alerts`, which the route builds from `Diagnostic.cycle`. Being routed
+in the return lane is a fact about ranking, not a fault: the room feeding a mic and the send back
+to a remote participant are both correct wiring and both take that lane, so colouring the lane
+red trains people to ignore red. `LayoutEdge.sourceIds` exists for this — room coupling collapses
+several graph edges into one line, and matching on `id` alone would draw a reported loop as
+innocent.
 
 Diagonals only ever occur in the gap between two columns, and a gap holds no boxes — that
 invariant is what the "routes clear of the boxes" test checks by sampling along each segment.

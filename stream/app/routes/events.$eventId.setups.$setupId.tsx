@@ -247,6 +247,11 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
   const modelById = new Map(models.map((model) => [model.id, model]));
   const deviceById = new Map(available.map((device) => [device.id, device]));
   const counts = severityCounts(diagnostics);
+  // The only thing the diagram draws in the danger colour. Routing facts — a
+  // return path under the picture — are not faults and must not borrow red.
+  const alerts = new Set(
+    diagnostics.flatMap((diagnostic) => (diagnostic.cycle ?? []).map((edge) => edge.id)),
+  );
 
   const nodeInfo = doc.nodes.map((node) => {
     const device = deviceById.get(node.deviceId);
@@ -326,7 +331,7 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
       ) : null}
       {tab === "links" ? <LinksTab doc={doc} nodeInfo={nodeInfo} /> : null}
       {tab === "routing" ? <RoutingTab doc={doc} nodeInfo={nodeInfo} /> : null}
-      {tab === "diagram" ? <SignalFlowDiagram layout={layout} /> : null}
+      {tab === "diagram" ? <SignalFlowDiagram layout={layout} alerts={alerts} /> : null}
       {tab === "json" ? <JsonTab doc={doc} setupName={setup.name} /> : null}
     </Page>
   );

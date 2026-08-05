@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Layout, LayoutEdge, LayoutNode, Point } from "~/lib/av/layout";
+import type { Layout, LayoutBand, LayoutEdge, LayoutNode, Point } from "~/lib/av/layout";
 
 /**
  * Picture of the signal flow, laid out from the document on every render.
@@ -8,6 +8,12 @@ import type { Layout, LayoutEdge, LayoutNode, Point } from "~/lib/av/layout";
  * rather than box to box so that it can become the wiring surface later: every
  * jack and every cable carries the document id it came from, which is the hook
  * a drag would need.
+ *
+ * `alerts` holds the graph edge ids the linter reported, and is the *only*
+ * thing drawn in the danger colour. The diagram does not decide on its own what
+ * looks wrong: a return path under the picture is a routing fact, and plenty of
+ * correct wiring produces one — the room feeding a mic, the send back to a
+ * remote participant. Colouring those red trains people to ignore red.
  */
 
 /** Solid = cable, dotted = inside a computer, dashed = through the room. */
@@ -20,8 +26,20 @@ const EDGE_DASH: Record<string, string | undefined> = {
 
 const CORNER = 7;
 
-export function SignalFlowDiagram({ layout }: { layout: Layout }) {
+const BAND_LABEL: Record<string, string> = {
+  input: "入力",
+  hub: "中間",
+  output: "出力",
+  space: "空間",
+};
+
+export function SignalFlowDiagram({
+  layout,
+  alerts,
+}: Readonly<{ layout: Layout; alerts?: ReadonlySet<string> }>) {
   const [focus, setFocus] = useState<string | null>(null);
+  const alerted = layout.edges.filter((edge) => isAlerted(edge, alerts));
+  const quiet = layout.edges.filter((edge) => !isAlerted(edge, alerts));
 
   if (layout.nodes.length === 0) {
     return (
@@ -41,6 +59,7 @@ export function SignalFlowDiagram({ layout }: { layout: Layout }) {
       >
         <title>信号フロー図</title>
         <defs>
+          {/* Two markers rather than `context-stroke`, which browsers disagree about. */}
           <marker
             id="flow-arrow"
             viewBox="0 0 8 8"
@@ -52,10 +71,25 @@ export function SignalFlowDiagram({ layout }: { layout: Layout }) {
           >
             <path d="M0,0 L8,4 L0,8 z" className="fill-muted-foreground" />
           </marker>
+          <marker
+            id="flow-arrow-alert"
+            viewBox="0 0 8 8"
+            refX="7"
+            refY="4"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto-start-reverse"
+          >
+            <path d="M0,0 L8,4 L0,8 z" className="fill-destructive" />
+          </marker>
         </defs>
 
-        {layout.edges.map((edge) => (
-          <Cable key={edge.id} edge={edge} dimmed={isDimmed(edge, focus)} />
+        {layout.bands.map((band) => (
+          <Band key={`${band.role}-${band.fromColumn}`} band={band} height={layout.height} />
+        ))}
+
+        {quiet.map((edge) => (
+          <Cable key={edge.id} edge={edge} dimmed={isDimmed(edge, focus)} alerted={false} />
         ))}
 
         {layout.nodes.map((node) => (
@@ -66,8 +100,36 @@ export function SignalFlowDiagram({ layout }: { layout: Layout }) {
             onBlur={() => setFocus(null)}
           />
         ))}
+
+        {/* Last, so what the linter reported is never buried under a halo or a box. */}
+        {alerted.map((edge) => (
+          <Cable key={edge.id} edge={edge} dimmed={isDimmed(edge, focus)} alerted={true} />
+        ))}
       </svg>
     </div>
+  );
+}
+
+/** A tint behind the columns, captioned. Deliberately not a frame — see `LayoutBand`. */
+function Band({ band, height }: Readonly<{ band: LayoutBand; height: number }>) {
+  return (
+    <g data-band={band.role}>
+      <rect
+        x={band.x}
+        y={10}
+        width={band.width}
+        height={Math.max(0, height - 20)}
+        rx={10}
+        className="fill-muted-foreground/[0.055]"
+      />
+      <text
+        x={band.x + 12}
+        y={26}
+        className="fill-muted-foreground/70 text-[9px] font-medium tracking-wide"
+      >
+        {BAND_LABEL[band.role] ?? band.role}
+      </text>
+    </g>
   );
 }
 
@@ -75,11 +137,24 @@ function isDimmed(edge: LayoutEdge, focus: string | null): boolean {
   return focus !== null && edge.from !== focus && edge.to !== focus;
 }
 
-function Cable({ edge, dimmed }: { edge: LayoutEdge; dimmed: boolean }) {
+function isAlerted(edge: LayoutEdge, alerts: ReadonlySet<string> | undefined): boolean {
+  return alerts !== undefined && edge.sourceIds.some((id) => alerts.has(id));
+}
+
+function Cable({
+  edge,
+  dimmed,
+  alerted,
+}: Readonly<{ edge: LayoutEdge; dimmed: boolean; alerted: boolean }>) {
   const d = roundedPath(edge.points);
-  const width = edge.kind === "space" ? 1.5 : 1.2;
+  const width = cableWidth(edge, alerted);
   return (
-    <g data-edge-id={edge.id} data-link-id={edge.linkId ?? undefined} opacity={dimmed ? 0.15 : 1}>
+    <g
+      data-edge-id={edge.id}
+      data-link-id={edge.linkId ?? undefined}
+      data-alerted={alerted ? "" : undefined}
+      opacity={dimmed ? 0.15 : 1}
+    >
       {/* Laid under the cable so a crossing still reads as a crossing. */}
       <path d={d} fill="none" strokeWidth={width + 3.5} className="stroke-background" />
       <path
@@ -89,11 +164,22 @@ function Cable({ edge, dimmed }: { edge: LayoutEdge; dimmed: boolean }) {
         strokeDasharray={EDGE_DASH[edge.kind]}
         strokeLinejoin="round"
         strokeLinecap="round"
-        markerEnd="url(#flow-arrow)"
-        className={edge.back ? "stroke-destructive/70" : "stroke-muted-foreground"}
+        markerEnd={alerted ? "url(#flow-arrow-alert)" : "url(#flow-arrow)"}
+        className={cableStroke(edge, alerted)}
       />
     </g>
   );
+}
+
+function cableWidth(edge: LayoutEdge, alerted: boolean): number {
+  if (alerted) return 2;
+  return edge.kind === "space" ? 1.5 : 1.2;
+}
+
+/** A return path recedes; only what the linter reported is loud. */
+function cableStroke(edge: LayoutEdge, alerted: boolean): string {
+  if (alerted) return "stroke-destructive";
+  return edge.back ? "stroke-muted-foreground/55" : "stroke-muted-foreground";
 }
 
 function Box({

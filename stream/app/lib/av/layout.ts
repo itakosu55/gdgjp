@@ -11,7 +11,8 @@ import type { DeviceCategory, Medium, PortDirection } from "./types";
  *
  * The pipeline is Sugiyama's, in the usual four stages:
  *
- *   1. rank into columns (longest path, after cutting the back edges)
+ *   1. rank into columns (longest path, after cutting the back edges, constrained
+ *      by role so inputs sit left and outputs sit right)
  *   2. insert a dummy per column a long edge crosses, so it never runs over a box
  *   3. order the rows within each column (median heuristic)
  *   4. assign y, pulling each box toward the median of its neighbours
@@ -40,12 +41,48 @@ export type LayoutPort = {
 
 export type PortSide = "left" | "right";
 
+/**
+ * What a device is for, which is what decides its column band.
+ *
+ * Longest-path ranking alone puts a device wherever the wiring happens to lead,
+ * and which edge gets cut to break a loop depends on the order the search
+ * visits things — so two identical mics could land in different columns. Role
+ * constrains the rank instead: inputs are pinned left, outputs are pushed right
+ * of everything that is not one, and the mics land together because they are
+ * mics, not because the search reached them the same way.
+ */
+export type NodeRole = "input" | "hub" | "output";
+
+/**
+ * A conferencing app is an input on purpose. It is genuinely both — a remote
+ * speaker arrives through it and the local mix is sent back out of it — but a
+ * remote participant reads as someone talking into the room, so it belongs with
+ * the mics. The send back to them becomes a return path under the diagram.
+ */
+const CATEGORY_ROLE: Partial<Record<DeviceCategory, NodeRole>> = {
+  mic: "input",
+  camera: "input",
+  wireless_rx: "input",
+  software_conferencing: "input",
+  speaker: "output",
+  display: "output",
+  headphone: "output",
+  recorder: "output",
+  software_broadcast: "output",
+};
+
+function roleOf(category: DeviceCategory): NodeRole {
+  return CATEGORY_ROLE[category] ?? "hub";
+}
+
 export type LayoutNode = {
   key: string;
   label: string;
   /** `null` for the room itself. */
   category: DeviceCategory | null;
   spaceKind: "acoustic" | "visual" | null;
+  /** `null` for the room, which follows whatever feeds it. */
+  role: NodeRole | null;
   column: number;
   row: number;
   x: number;
@@ -68,14 +105,38 @@ export type LayoutEdge = {
   media: Medium[];
   /** Set for `cable` and `host` edges — the document link this cable is. */
   linkId: string | null;
+  /**
+   * The graph edges this line stands for. Room coupling collapses several into
+   * one, so matching a `Diagnostic.cycle` against `id` alone would miss them.
+   */
+  sourceIds: string[];
   /** Runs right to left: the edge that closes a loop. Routed under the diagram. */
   back: boolean;
   points: Point[];
 };
 
+/**
+ * A run of columns that share a role, drawn as a tint behind the boxes.
+ *
+ * A band rather than a frame around the group: once ranking is role-constrained
+ * the position already says what the role is, and a frame would re-state it in
+ * a lot of ink, imply a containment that is not there, and collide with the
+ * border vocabulary the boxes already use (solid device, dashed room). A tint
+ * sits behind the cables instead of fighting them, and stretches to however
+ * many columns the middle turns out to need.
+ */
+export type LayoutBand = {
+  role: NodeRole | "space";
+  fromColumn: number;
+  toColumn: number;
+  x: number;
+  width: number;
+};
+
 export type Layout = {
   nodes: LayoutNode[];
   edges: LayoutEdge[];
+  bands: LayoutBand[];
   columns: number;
   rows: number;
   width: number;
@@ -101,14 +162,22 @@ const HEADER_HEIGHT = 38;
 const PORT_PITCH = 16;
 const BOX_MIN_HEIGHT = 50;
 const BOX_PAD_BOTTOM = 10;
-const ROW_GAP = 26;
+const ROW_GAP = 34;
 const DUMMY_HEIGHT = 10;
 const ELBOW = 14;
-const ESCAPE = 12;
+/**
+ * How far a cable looping around a box stands off from it. Too close and the
+ * loop reads as a second, dashed border on the box instead of as a cable.
+ */
+const ESCAPE = 18;
 const LANE_GAP = 30;
 const LANE_PITCH = 14;
 const ORDER_SWEEPS = 4;
 const ALIGN_PASSES = 4;
+/** Room above the boxes for the band captions. */
+const BAND_HEADER = 28;
+/** Gutter left between two bands, so they read as neighbours and not as one. */
+const BAND_GUTTER = 14;
 
 function columnX(column: number): number {
   return PADDING + column * (BOX_WIDTH + COL_GAP);
@@ -127,6 +196,9 @@ type Box = {
   kind: "node" | "space";
   label: string;
   category: DeviceCategory | null;
+  role: NodeRole | null;
+  /** The computer this app runs on, for software nodes. */
+  hostKey: string | null;
   spaceKind: "acoustic" | "visual" | null;
   ports: BoxPort[];
   height: number;
@@ -141,6 +213,7 @@ type DrawnEdge = {
   kind: EdgeKind;
   media: Medium[];
   linkId: string | null;
+  sourceIds: string[];
 };
 
 /** Box key of a vertex: port vertices collapse onto the device that owns them. */
@@ -160,11 +233,11 @@ export function layoutGraph(graph: BuiltGraph, options: LayoutOptions = {}): Lay
   const edges = collectEdges(graph, boxes);
   const keys = [...boxes.keys()];
 
-  const { forward, back } = splitByDirection(keys, edges);
-  const column = rankNodes(keys, forward);
+  const { forward, back } = splitByDirection(keys, edges, boxes);
+  const column = rankByRole(keys, forward, boxes);
 
   const { items, segments } = insertDummies(keys, forward, column);
-  const order = orderRows(items, segments, options.order);
+  const order = orderRows(items, segments, boxes, options.order);
   const y = assignRows(order, boxes, segments);
 
   return buildLayout(boxes, edges, forward, back, column, order, y);
@@ -191,6 +264,8 @@ function collectBoxes(graph: BuiltGraph): Map<string, Box> {
       kind: "node",
       label: nodeLabel(resolved),
       category: resolved.model.category,
+      role: roleOf(resolved.model.category),
+      hostKey: resolved.node.hostNodeId ?? null,
       spaceKind: null,
       ports,
       height: boxHeight(nextIndex.in, nextIndex.out),
@@ -204,6 +279,8 @@ function collectBoxes(graph: BuiltGraph): Map<string, Box> {
       kind: "space",
       label: space.label,
       category: null,
+      role: null,
+      hostKey: null,
       spaceKind: space.kind,
       ports: [],
       height: BOX_MIN_HEIGHT,
@@ -229,7 +306,7 @@ function boxHeight(ins: number, outs: number): number {
  */
 function collectEdges(graph: BuiltGraph, boxes: Map<string, Box>): DrawnEdge[] {
   const drawn: DrawnEdge[] = [];
-  const seen = new Set<string>();
+  const spaces = new Map<string, DrawnEdge>();
 
   for (const edge of graph.edges) {
     if (edge.kind === "internal") continue;
@@ -240,9 +317,12 @@ function collectEdges(graph: BuiltGraph, boxes: Map<string, Box>): DrawnEdge[] {
 
     if (edge.kind === "space") {
       const key = `space:${from}->${to}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      drawn.push({
+      const existing = spaces.get(key);
+      if (existing) {
+        existing.sourceIds.push(edge.id);
+        continue;
+      }
+      const collapsed: DrawnEdge = {
         id: key,
         from,
         to,
@@ -251,7 +331,10 @@ function collectEdges(graph: BuiltGraph, boxes: Map<string, Box>): DrawnEdge[] {
         kind: "space",
         media: edge.media,
         linkId: null,
-      });
+        sourceIds: [edge.id],
+      };
+      spaces.set(key, collapsed);
+      drawn.push(collapsed);
       continue;
     }
 
@@ -264,6 +347,7 @@ function collectEdges(graph: BuiltGraph, boxes: Map<string, Box>): DrawnEdge[] {
       kind: edge.kind,
       media: edge.media,
       linkId: linkIdOf(edge),
+      sourceIds: [edge.id],
     });
   }
 
@@ -274,18 +358,93 @@ function linkIdOf(edge: GraphEdge): string | null {
   return edge.linkId ?? null;
 }
 
+/**
+ * Splits the edges into the ones ranking may follow and the ones it may not.
+ *
+ * Anything arriving at an input is cut before the loop search runs. A mic is
+ * where signal starts by definition, so the room feeding it is a return path,
+ * not a step forward — and cutting it by rule rather than by whichever edge the
+ * search happened to reach first is what keeps two identical mics together.
+ */
 function splitByDirection(
   keys: readonly string[],
   edges: readonly DrawnEdge[],
+  boxes: Map<string, Box>,
 ): { forward: DrawnEdge[]; back: DrawnEdge[] } {
-  const dropped = cutBackEdges(keys, edges);
+  const intoInput = new Set(edges.filter((edge) => boxes.get(edge.to)?.role === "input"));
+  const candidates = edges.filter((edge) => !intoInput.has(edge));
+  const dropped = cutBackEdges(keys, candidates);
+
   const forward: DrawnEdge[] = [];
   const back: DrawnEdge[] = [];
   for (const edge of edges) {
-    if (dropped.has(edge)) back.push(edge);
+    if (intoInput.has(edge) || dropped.has(edge)) back.push(edge);
     else forward.push(edge);
   }
   return { forward, back };
+}
+
+/**
+ * Ranks in two passes, because where the outputs belong depends on how wide
+ * everything else turned out.
+ *
+ * The first pass finds the natural depth of the inputs and the middle. The
+ * second pins every output one column past the deepest of those, so speakers,
+ * recorders and OBS line up on the right however long the chain feeding them
+ * is. Rooms carry no floor of their own — a room sits wherever what feeds it
+ * puts it, which is to say just past the speakers.
+ */
+function rankByRole(
+  keys: readonly string[],
+  forward: readonly DrawnEdge[],
+  boxes: Map<string, Box>,
+): Map<string, number> {
+  const hasInput = [...boxes.values()].some((box) => box.role === "input");
+  const floorFor = (key: string, output: number): number | undefined => {
+    const role = boxes.get(key)?.role;
+    if (role === "input") return 0;
+    if (role === "output") return output;
+    if (role === "hub") return hasInput ? 1 : 0;
+    return undefined;
+  };
+
+  const floors = (output: number) =>
+    new Map(
+      keys.flatMap((key) => {
+        const floor = floorFor(key, output);
+        return floor === undefined ? [] : [[key, floor] as const];
+      }),
+    );
+
+  const first = rankNodes(keys, forward, floors(hasInput ? 1 : 0));
+
+  let deepest = 0;
+  for (const [key, box] of boxes) {
+    if (box.kind === "space" || box.role === "output") continue;
+    deepest = Math.max(deepest, first.get(key) ?? 0);
+  }
+
+  return pinToHosts(rankNodes(keys, forward, floors(deepest + 1)), boxes);
+}
+
+/**
+ * Sits an app in the same column as the computer it runs on.
+ *
+ * A software node is not another stage of the signal chain — it is inside the
+ * machine, and ranking it by where the signal reaches puts OBS out among the
+ * speakers, which is not where anyone looks for it. Role wins over this: a
+ * conferencing app stays pinned left with the mics, because a remote
+ * participant reads as someone talking into the room rather than as part of the
+ * computer. The link to the host then runs within the column, which
+ * `routeSibling` draws as a short connector down the side.
+ */
+function pinToHosts(rank: Map<string, number>, boxes: Map<string, Box>): Map<string, number> {
+  for (const [key, box] of boxes) {
+    if (box.hostKey === null || box.role === "input") continue;
+    const host = rank.get(box.hostKey);
+    if (host !== undefined) rank.set(key, host);
+  }
+  return rank;
 }
 
 /**
@@ -295,7 +454,11 @@ function splitByDirection(
  * it cannot relax over one either. Every pass around a loop adds another column,
  * so a single howling path drags the diagram thousands of pixels wide.
  */
-function rankNodes(keys: readonly string[], forward: readonly DrawnEdge[]): Map<string, number> {
+function rankNodes(
+  keys: readonly string[],
+  forward: readonly DrawnEdge[],
+  floors: Map<string, number>,
+): Map<string, number> {
   const incoming = new Map<string, string[]>();
   for (const edge of forward) {
     const list = incoming.get(edge.to);
@@ -303,7 +466,7 @@ function rankNodes(keys: readonly string[], forward: readonly DrawnEdge[]): Map<
     else incoming.set(edge.to, [edge.from]);
   }
 
-  const rank = new Map<string, number>(keys.map((key) => [key, 0]));
+  const rank = new Map<string, number>(keys.map((key) => [key, floors.get(key) ?? 0]));
   for (let pass = 0; pass < keys.length; pass++) {
     let changed = false;
     for (const key of keys) {
@@ -409,6 +572,9 @@ function insertDummies(
   for (const edge of forward) {
     const from = column.get(edge.from) ?? 0;
     const to = column.get(edge.to) ?? 0;
+    // An app and its host share a column, so the link between them constrains
+    // no ordering — it is drawn inside the column instead.
+    if (to === from) continue;
     if (to - from <= 1) {
       segments.push({ from: edge.from, to: edge.to });
       continue;
@@ -441,6 +607,7 @@ function insertDummies(
 function orderRows(
   items: Items,
   segments: readonly Segment[],
+  boxes: Map<string, Box>,
   seed?: readonly string[],
 ): string[][] {
   const rank = new Map<string, number>();
@@ -480,7 +647,31 @@ function orderRows(
     }
   }
 
-  return columns;
+  return columns.map((column) => hostsFirst(column, boxes));
+}
+
+/**
+ * Moves each app to sit directly after the computer it runs on.
+ *
+ * The link between them was left out of the ordering — it points nowhere, both
+ * ends being in this column — so nothing else would keep them together, and an
+ * app floating a long way from its host reads as a separate machine.
+ */
+function hostsFirst(column: readonly string[], boxes: Map<string, Box>): string[] {
+  const hosted = column.filter((key) => {
+    const host = boxes.get(key)?.hostKey;
+    return host !== null && host !== undefined && column.includes(host);
+  });
+  if (hosted.length === 0) return [...column];
+
+  const result = column.filter((key) => !hosted.includes(key));
+  for (const key of hosted) {
+    const host = boxes.get(key)?.hostKey;
+    const at = host === undefined || host === null ? -1 : result.indexOf(host);
+    if (at < 0) result.push(key);
+    else result.splice(at + 1, 0, key);
+  }
+  return result;
 }
 
 function push(map: Map<string, string[]>, key: string, value: string): void {
@@ -568,13 +759,35 @@ function assignRows(
     }
   }
 
+  // An app belongs immediately under its host, whatever the alignment did to
+  // the host — the two are one machine, and a gap between them says otherwise.
+  for (const items of columns) {
+    let moved = false;
+    for (const key of items) {
+      const host = boxes.get(key)?.hostKey;
+      if (!host || !items.includes(host)) continue;
+      const hostY = y.get(host);
+      const hostBox = boxes.get(host);
+      if (hostY === undefined || !hostBox) continue;
+      y.set(key, hostY + hostBox.height + ROW_GAP);
+      moved = true;
+    }
+    if (!moved) continue;
+    const heights = items.map(heightOf);
+    const settled = packDown(
+      items.map((key) => y.get(key) ?? 0),
+      heights,
+    );
+    items.forEach((key, index) => y.set(key, settled[index] ?? 0));
+  }
+
   // Every column was laid out from its own origin; share one.
   let top = Number.POSITIVE_INFINITY;
   for (const items of columns) {
     for (const key of items) top = Math.min(top, y.get(key) ?? 0);
   }
   if (!Number.isFinite(top)) top = 0;
-  for (const [key, value] of y) y.set(key, value - top + PADDING);
+  for (const [key, value] of y) y.set(key, value - top + PADDING + BAND_HEADER);
 
   return y;
 }
@@ -637,6 +850,7 @@ function buildLayout(
         key: box.key,
         label: box.label,
         category: box.category,
+        role: box.role,
         spaceKind: box.spaceKind,
         column: box.column,
         row: box.row,
@@ -669,10 +883,12 @@ function buildLayout(
     if (!from || !to) continue;
     const a = anchorOf(from, edge.fromPort, "right");
     const b = anchorOf(to, edge.toPort, "left");
+    const sameColumn = to.column === from.column;
     const isForward = forwardSet.has(edge) && to.column > from.column;
-    const points = isForward
-      ? routeForward(a, b, from, to, waypoints(edge, columns, column, y))
-      : routeBack(a, b, bottom + LANE_GAP + lane++ * LANE_PITCH);
+    let points: Point[];
+    if (sameColumn) points = routeSibling(a, b, from, to);
+    else if (isForward) points = routeForward(a, b, from, to, waypoints(edge, columns, column, y));
+    else points = routeBack(a, b, bottom + LANE_GAP + lane++ * LANE_PITCH);
     laid.push({
       id: edge.id,
       from: edge.from,
@@ -682,7 +898,8 @@ function buildLayout(
       kind: edge.kind,
       media: edge.media,
       linkId: edge.linkId,
-      back: !isForward,
+      sourceIds: edge.sourceIds,
+      back: !isForward && !sameColumn,
       points,
     });
   }
@@ -694,16 +911,62 @@ function buildLayout(
   for (const edge of laid) {
     for (const point of edge.points) height = Math.max(height, point.y + PADDING);
   }
+  width += PADDING;
+  const columnCount = nodes.reduce((max, node) => Math.max(max, node.column + 1), 0);
 
   return {
     nodes,
     edges: laid,
-    columns: nodes.reduce((max, node) => Math.max(max, node.column + 1), 0),
+    bands: computeBands(nodes, columnCount, width),
+    columns: columnCount,
     rows: columns.reduce((max, items) => Math.max(max, items.length), 0),
-    width: width + PADDING,
+    width,
     height,
     order,
   };
+}
+
+/**
+ * Groups the columns into role bands.
+ *
+ * A column takes the role of the devices in it; a column holding only rooms is
+ * its own band, because a room belongs to no role and lands past the outputs.
+ * A column of mixed roles counts as middle — it is the one that has to give.
+ */
+function computeBands(
+  nodes: readonly LayoutNode[],
+  columnCount: number,
+  width: number,
+): LayoutBand[] {
+  const roleByColumn: (NodeRole | "space" | null)[] = [];
+  for (let col = 0; col < columnCount; col++) {
+    const inColumn = nodes.filter((node) => node.column === col);
+    const devices = inColumn.filter((node) => node.role !== null);
+    if (inColumn.length === 0) roleByColumn.push(null);
+    else if (devices.length === 0) roleByColumn.push("space");
+    else {
+      const roles = new Set(devices.map((node) => node.role as NodeRole));
+      roleByColumn.push(roles.size === 1 ? (roles.values().next().value as NodeRole) : "hub");
+    }
+  }
+
+  const bands: LayoutBand[] = [];
+  for (let col = 0; col < roleByColumn.length; col++) {
+    const role = roleByColumn[col];
+    if (role === null || role === undefined) continue;
+    const last = bands[bands.length - 1];
+    if (last && last.role === role && last.toColumn === col - 1) last.toColumn = col;
+    else bands.push({ role, fromColumn: col, toColumn: col, x: 0, width: 0 });
+  }
+
+  const inset = Math.max(0, (COL_GAP - BAND_GUTTER) / 2);
+  for (const band of bands) {
+    const left = Math.max(PADDING / 2, columnX(band.fromColumn) - inset);
+    const right = Math.min(width - PADDING / 2, columnX(band.toColumn) + BOX_WIDTH + inset);
+    band.x = left;
+    band.width = Math.max(0, right - left);
+  }
+  return bands;
 }
 
 /** Where a long edge crosses the columns in between, in left-to-right order. */
@@ -785,6 +1048,31 @@ function routeForward(a: Anchor, b: Anchor, from: PlacedBox, to: PlacedBox, via:
 
 function escapeLane(y: number, box: PlacedBox): number {
   return y < box.y + box.height / 2 ? box.y - ESCAPE : box.y + box.height + ESCAPE;
+}
+
+/**
+ * Two boxes in the same column: an app and the computer it runs on.
+ *
+ * The connector crosses the gap between them rather than taking the return
+ * lane, because nothing here is going backwards — it is one machine. When both
+ * jacks are on the same face, which is the usual shape for a host link
+ * (out→out or in→in), this collapses to a straight run down that side.
+ */
+function routeSibling(a: Anchor, b: Anchor, from: PlacedBox, to: PlacedBox): Point[] {
+  const above = from.y <= to.y ? from : to;
+  const below = above === from ? to : from;
+  const midY = (above.y + above.height + below.y) / 2;
+
+  const ax = a.side === "right" ? a.x + ELBOW : a.x - ELBOW;
+  const bx = b.side === "right" ? b.x + ELBOW : b.x - ELBOW;
+  return [
+    { x: a.x, y: a.y },
+    { x: ax, y: a.y },
+    { x: ax, y: midY },
+    { x: bx, y: midY },
+    { x: bx, y: b.y },
+    { x: b.x, y: b.y },
+  ];
 }
 
 /**
