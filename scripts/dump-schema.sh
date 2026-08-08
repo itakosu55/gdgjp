@@ -26,7 +26,15 @@ fi
 
 pkg_name="$(basename "$app_dir")"
 if [ -f "$app_dir/package.json" ]; then
-  parsed="$(node -p "require('$app_dir/package.json').name || ''" 2>/dev/null || true)"
+  # The path goes through argv, not into the script body: under Git Bash
+  # `$app_dir` is an MSYS path (`/x/GitHub/...`) that Windows node cannot
+  # resolve, and only arguments get translated on the way to a native binary.
+  # Interpolated into `node -p "require('…')"` it silently failed, so every
+  # dump regenerated on Windows lost its `@gdgjp/` prefix.
+  parsed="$(node -e 'try {
+    const { readFileSync } = require("node:fs");
+    process.stdout.write(JSON.parse(readFileSync(process.argv[1], "utf8")).name ?? "");
+  } catch {}' "$app_dir/package.json" 2>/dev/null || true)"
   [ -n "$parsed" ] && pkg_name="$parsed"
 fi
 

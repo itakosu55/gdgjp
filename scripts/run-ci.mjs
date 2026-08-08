@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join, delimiter as pathDelimiter } from "node:path";
 
 const quickSteps = [
   ["lint", "pnpm exec biome check . --reporter=github"],
@@ -196,6 +198,34 @@ function formatDuration(milliseconds) {
   return `${(milliseconds / 1000).toFixed(1)}s`;
 }
 
+// Step commands are POSIX shell syntax (`$(…)`, `[ -n … ]`, single-quoted paths
+// from shellQuote). On Windows `shell: true` runs them through cmd.exe, which
+// understands none of it, so resolve the Git for Windows bash instead. A bare
+// `bash` is deliberately not used: on most Windows installs it resolves to
+// WSL's bash, which is a different filesystem without the repo's toolchain.
+function stepShell() {
+  if (process.platform !== "win32") {
+    return true;
+  }
+
+  const gitDirectories = (process.env.PATH ?? "")
+    .split(pathDelimiter)
+    .filter((entry) => /\\Git\\(?:cmd|bin|mingw64\\bin)$/i.test(entry))
+    .map((entry) => join(entry, "..", ".."));
+  const candidates = [
+    process.env.CI_SHELL,
+    ...gitDirectories.map((directory) => join(directory, "bin", "bash.exe")),
+    join(process.env.ProgramFiles ?? String.raw`C:\Program Files`, "Git", "bin", "bash.exe"),
+    join(process.env.LOCALAPPDATA ?? "", "Programs", "Git", "bin", "bash.exe"),
+  ];
+  const shell = candidates.find((candidate) => candidate && existsSync(candidate));
+  if (!shell) {
+    console.warn("ci:warn no POSIX shell found; falling back to the default Windows shell");
+    return true;
+  }
+  return shell;
+}
+
 function runStep([name, command, environment = {}]) {
   return new Promise((resolve) => {
     const startedAt = performance.now();
@@ -203,7 +233,7 @@ function runStep([name, command, environment = {}]) {
     const child = spawn(command, {
       cwd: process.cwd(),
       env: { ...process.env, ...environment },
-      shell: true,
+      shell: stepShell(),
       stdio: ["ignore", "pipe", "pipe"],
     });
 
