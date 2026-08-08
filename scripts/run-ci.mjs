@@ -47,6 +47,7 @@ const workspaces = new Map([
   ["img", "@gdgjp/img"],
   ["scheduler", "@gdgjp/scheduler"],
   ["sns", "@gdgjp/sns"],
+  ["stream", "@gdgjp/stream"],
   ["tinyurl", "@gdgjp/tinyurl"],
   ["tinyurl-gateway", "@gdgjp/tinyurl-gateway"],
   ["website", "@gdgjp/website"],
