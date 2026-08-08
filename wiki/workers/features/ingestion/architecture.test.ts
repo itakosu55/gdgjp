@@ -1,14 +1,15 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 describe("generation architecture", () => {
-  function readTypeScriptTree(directory: URL): string {
-    const path = directory.pathname;
+  function readTypeScriptTree(directory: URL | string): string {
+    const path = typeof directory === "string" ? directory : fileURLToPath(directory);
     return readdirSync(path, { withFileTypes: true })
       .flatMap((entry) => {
         const child = join(path, entry.name);
-        if (entry.isDirectory()) return readTypeScriptTree(new URL(`file://${child}/`));
+        if (entry.isDirectory()) return readTypeScriptTree(child);
         return extname(entry.name).startsWith(".ts") ? [readFileSync(child, "utf8")] : [];
       })
       .join("\n");
