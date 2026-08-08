@@ -209,7 +209,7 @@ func (h *RemoteHelper) importSnapshot(ctx context.Context, snapshot Snapshot, pa
 		if treeErr != nil {
 			return "", treeErr
 		}
-		commit, err = h.gitOutput(ctx, "-c", "user.name=GDG Wiki", "-c", "user.email=wiki@gdgs.jp", "commit-tree", strings.TrimSpace(tree), "-p", parent, "-m", "Wiki snapshot")
+		commit, err = h.gitOutput(ctx, "-c", "user.name=GDG Wiki", "-c", "user.email=wiki@gdgs.jp", "-c", "commit.gpgsign=false", "commit-tree", strings.TrimSpace(tree), "-p", parent, "-m", "Wiki snapshot")
 		if err != nil {
 			return "", fmt.Errorf("create synthetic Wiki snapshot commit: %w", err)
 		}

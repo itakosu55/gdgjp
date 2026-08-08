@@ -43,7 +43,10 @@ func MaterializeSnapshot(ctx context.Context, snapshot Snapshot, token string, c
 	}
 	// An empty Wiki is still a valid remote state and needs a fetchable commit.
 	// Parent links, when needed, are created in the caller's object database.
-	args := []string{"-c", "user.name=GDG Wiki", "-c", "user.email=wiki@gdgs.jp", "commit", "-q", "--allow-empty", "-m", "Wiki snapshot"}
+	// The identity is the Wiki bot, not the user, so the user's signing key must
+	// not be involved: with a global commit.gpgsign=true, signing this synthetic
+	// commit would prompt for a passphrase inside a non-interactive remote helper.
+	args := []string{"-c", "user.name=GDG Wiki", "-c", "user.email=wiki@gdgs.jp", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "Wiki snapshot"}
 	if err = gitAt(ctx, root, args...); err != nil {
 		return "", "", err
 	}

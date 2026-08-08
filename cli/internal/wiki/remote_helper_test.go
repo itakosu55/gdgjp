@@ -12,7 +12,9 @@ import (
 
 func TestRemoteHelperListsAndImportsSyntheticSnapshot(t *testing.T) {
 	repository := t.TempDir()
-	git(t, repository, "init", "-q")
+	// -b main is explicit: the helper only accepts refs/heads/main, and the
+	// fixture must not depend on the developer's init.defaultBranch.
+	git(t, repository, "init", "-q", "-b", "main")
 	gitDir := filepath.Join(repository, ".git")
 	t.Setenv("GIT_DIR", gitDir)
 
@@ -56,7 +58,7 @@ func TestRemoteHelperListsAndImportsSyntheticSnapshot(t *testing.T) {
 
 func TestRemoteHelperReusesUnchangedTrackingSnapshot(t *testing.T) {
 	repository := t.TempDir()
-	git(t, repository, "init", "-q")
+	git(t, repository, "init", "-q", "-b", "main")
 	gitDir := filepath.Join(repository, ".git")
 	t.Setenv("GIT_DIR", gitDir)
 	snapshot := Snapshot{Pages: []Page{{
@@ -80,7 +82,7 @@ func TestRemoteHelperReusesUnchangedTrackingSnapshot(t *testing.T) {
 
 func TestRemoteHelperListsEmptyWiki(t *testing.T) {
 	repository := t.TempDir()
-	git(t, repository, "init", "-q")
+	git(t, repository, "init", "-q", "-b", "main")
 	gitDir := filepath.Join(repository, ".git")
 	t.Setenv("GIT_DIR", gitDir)
 	var output bytes.Buffer
@@ -100,7 +102,7 @@ func TestRemoteHelperListsEmptyWiki(t *testing.T) {
 
 func TestRemoteHelperPushesCommittedPageChangeAndCachesCanonicalSnapshot(t *testing.T) {
 	repository := t.TempDir()
-	git(t, repository, "init", "-q")
+	git(t, repository, "init", "-q", "-b", "main")
 	gitDir := filepath.Join(repository, ".git")
 	t.Setenv("GIT_DIR", gitDir)
 	current := Snapshot{Pages: []Page{{
@@ -157,7 +159,7 @@ func TestRemoteHelperPushReportsConflictWithoutChangingWorktree(t *testing.T) {
 	// A remote-helper error line is deliberately a protocol-level push failure;
 	// the helper only reads commits and leaves the caller's checkout untouched.
 	repository := t.TempDir()
-	git(t, repository, "init", "-q")
+	git(t, repository, "init", "-q", "-b", "main")
 	gitDir := filepath.Join(repository, ".git")
 	t.Setenv("GIT_DIR", gitDir)
 	git(t, repository, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "base")
@@ -178,7 +180,15 @@ func git(t *testing.T, directory string, args ...string) string {
 	command.Dir = directory
 	// A remote-helper call runs with GIT_DIR set by Git. Tests set it as well,
 	// but commands explicitly run in the test repository must not inherit it.
-	command.Env = withoutEnvironment(os.Environ(), "GIT_DIR")
+	// Fixtures are also isolated from the developer's Git configuration: a global
+	// commit.gpgsign, for instance, would make these commits prompt for a
+	// passphrase and fail in a non-interactive run.
+	absentConfig := filepath.Join(t.TempDir(), "gitconfig")
+	command.Env = append(
+		withoutEnvironment(os.Environ(), "GIT_DIR"),
+		"GIT_CONFIG_GLOBAL="+absentConfig,
+		"GIT_CONFIG_SYSTEM="+absentConfig,
+	)
 	raw, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %s", strings.Join(args, " "), raw)
