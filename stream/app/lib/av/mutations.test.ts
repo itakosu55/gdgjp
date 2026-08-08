@@ -128,3 +128,30 @@ describe("applyFix", () => {
     expect(after.map((d) => d.ruleId)).not.toContain("acoustic-feedback-loop");
   });
 });
+
+describe("software nodes survive an edit", () => {
+  it("keeps modelId when a node is updated", () => {
+    const doc: SetupDoc = {
+      schemaVersion: 1,
+      spaces: [{ id: "sp_mtg", kind: "transport", label: "Meet" }],
+      nodes: [{ id: "n_meet", modelId: "m_meet", hostNodeId: "n_pc" }],
+      links: [],
+      routing: [],
+    };
+
+    // `clean` rebuilds the node from a whitelist, so a reference it does not
+    // know about would be dropped silently.
+    const next = applyOperation(doc, {
+      kind: "update-node",
+      nodeId: "n_meet",
+      patch: { spaceId: "sp_mtg" },
+    });
+
+    expect(next.nodes[0]).toEqual({
+      id: "n_meet",
+      modelId: "m_meet",
+      spaceId: "sp_mtg",
+      hostNodeId: "n_pc",
+    });
+  });
+});

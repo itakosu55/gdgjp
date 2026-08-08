@@ -70,6 +70,19 @@ test.describe("remote participant echo", () => {
   });
 });
 
+test("reports a loop closed through a second join of the same meeting", async ({ page }) => {
+  await page.goto(setupUrl("e2e_setup_transport"));
+
+  const found = diagnostic(page, "transport-echo-loop");
+  await expect(found).toHaveAttribute("data-severity", "critical");
+  // The presenter's own laptop is the machine that appears on no patch sheet,
+  // and naming it is the whole point of the rule.
+  await expect(found).toContainText("E2E 内蔵マイク");
+  await expect(found).toContainText("E2E 会場スピーカー");
+  // Not oscillation in the room: the two must not both be reported.
+  await expect(ruleIds(page)).resolves.not.toContain("acoustic-feedback-loop");
+});
+
 test("reports a stream with no audio reaching it", async ({ page }) => {
   await page.goto(setupUrl("e2e_setup_silent"));
 
@@ -91,4 +104,31 @@ test("the diagram stays a sane width on a setup that howls", async ({ page }) =>
   // a six-node diagram out to ~5000px.
   const width = Number(await svg.getAttribute("width"));
   expect(width).toBeLessThan(1500);
+});
+
+// The presenter's laptop is the machine that closes the loop in this fixture,
+// and it never used to look like a machine: its Meet window was pinned over
+// with the mics, several columns from the laptop running it.
+test("the diagram draws each app inside its machine and each machine in its room", async ({
+  page,
+}) => {
+  await page.goto(setupUrl("e2e_setup_transport", "diagram"));
+
+  const laptop = page.locator('[data-node-key="n6"]').locator("rect").first();
+  const join = page.locator('[data-node-key="n8"]');
+  await expect(join).toHaveAttribute("data-parent-key", "n6");
+
+  const room = await page.locator("[data-frame-key]").first().locator("rect").boundingBox();
+  const machine = await laptop.boundingBox();
+  const app = await join.locator("rect").first().boundingBox();
+  if (!room || !machine || !app) throw new Error("the diagram did not render");
+
+  const inside = (outer: typeof room, inner: typeof room) =>
+    inner.x >= outer.x &&
+    inner.y >= outer.y &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y + inner.height <= outer.y + outer.height;
+
+  expect(inside(machine, app)).toBe(true);
+  expect(inside(room, machine)).toBe(true);
 });

@@ -27,11 +27,19 @@ export async function loader(args: Route.LoaderArgs) {
   return {
     user: { name: user.name, email: user.email, image: user.image },
     devices,
-    models: models.map((model) => ({
-      id: model.id,
-      label: model.maker ? `${model.maker} ${model.name}` : model.name,
-      category: model.category,
-    })),
+    // Software is deliberately absent: the ledger holds one row per physical
+    // unit, and "Meet #1" is not a unit. A setup references those models
+    // directly instead — see the note on `SetupNode.modelId`.
+    models: models
+      .filter(
+        (model) =>
+          model.category !== "software_broadcast" && model.category !== "software_conferencing",
+      )
+      .map((model) => ({
+        id: model.id,
+        label: model.maker ? `${model.maker} ${model.name}` : model.name,
+        category: model.category,
+      })),
   };
 }
 

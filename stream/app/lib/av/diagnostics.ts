@@ -1,4 +1,5 @@
 import type { BuiltGraph, GraphEdge } from "./graph";
+import { nodeLabel } from "./graph";
 import type { SetupDoc } from "./schema";
 import type { Device, DeviceCategory, DeviceModel } from "./types";
 
@@ -60,14 +61,28 @@ export function sortDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
   });
 }
 
+/**
+ * A node's name for a message.
+ *
+ * Two joins into one meeting are two nodes of the same model, so an unlabelled
+ * software node is qualified by the machine it runs on. Without this, the
+ * finding that matters most reads "Google Meet → Google Meet" and names neither
+ * laptop — and the whole point of the rule is naming the machine that appears
+ * on no patch sheet.
+ */
+export function describeNode(graph: BuiltGraph, nodeId: string): string {
+  const resolved = graph.nodes.get(nodeId);
+  if (!resolved) return nodeId;
+  const label = nodeLabel(resolved);
+  if (resolved.node.label) return label;
+  const host = resolved.node.hostNodeId;
+  const hostNode = host ? graph.nodes.get(host) : undefined;
+  return hostNode ? `${label} (${nodeLabel(hostNode)})` : label;
+}
+
 /** "登壇者マイク → MG10XU → 配信PC" for use in messages. */
 export function describePath(graph: BuiltGraph, nodeIds: readonly string[]): string {
-  return nodeIds
-    .map((id) => {
-      const node = graph.nodes.get(id);
-      return node ? (node.node.label ?? node.device.name) : id;
-    })
-    .join(" → ");
+  return nodeIds.map((id) => describeNode(graph, id)).join(" → ");
 }
 
 /**

@@ -1,6 +1,7 @@
-import type { BuiltGraph, EdgeKind, GraphEdge, VertexId } from "./graph";
-import { nodeLabel } from "./graph";
-import type { DeviceCategory, Medium, PortDirection } from "./types";
+import type { BuiltGraph, EdgeKind, GraphEdge, ResolvedNode, VertexId } from "./graph";
+import { isPortWired, nodeLabel } from "./graph";
+import type { Space } from "./schema";
+import type { DeviceCategory, Medium, PortDirection, SpaceKind } from "./types";
 
 /**
  * Lays the graph out for the signal-flow diagram.
@@ -16,6 +17,20 @@ import type { DeviceCategory, Medium, PortDirection } from "./types";
  *   2. insert a dummy per column a long edge crosses, so it never runs over a box
  *   3. order the rows within each column (median heuristic)
  *   4. assign y, pulling each box toward the median of its neighbours
+ *
+ * On top of that sits **containment**, which the columns cannot express, because
+ * where a thing is has nothing to do with what stage of the chain it is:
+ *
+ * - A computer *contains* the apps that run on it, so the app is drawn inside
+ *   the machine's box and never appears in the column stages at all. The machine
+ *   is the unit that gets ranked, which is what removed the three special cases
+ *   (`pinToHosts`, `hostsFirst`, and a host-pinning pass in `assignRows`) that
+ *   used to chase an app around after ranking had scattered it.
+ * - A room *contains* whatever is in it, and a room spans the whole chain — mic
+ *   at the left, speaker at the right. So a room is a horizontal lane rather
+ *   than a box: every one of its members shares one band of rows, across every
+ *   column. That is what keeps the frame drawn round a room from swallowing a
+ *   box belonging to a different room, which a plain bounding box would.
  *
  * Two properties matter more than tidiness, because of what comes next:
  *
@@ -53,17 +68,10 @@ export type PortSide = "left" | "right";
  */
 export type NodeRole = "input" | "hub" | "output";
 
-/**
- * A conferencing app is an input on purpose. It is genuinely both — a remote
- * speaker arrives through it and the local mix is sent back out of it — but a
- * remote participant reads as someone talking into the room, so it belongs with
- * the mics. The send back to them becomes a return path under the diagram.
- */
 const CATEGORY_ROLE: Partial<Record<DeviceCategory, NodeRole>> = {
   mic: "input",
   camera: "input",
   wireless_rx: "input",
-  software_conferencing: "input",
   speaker: "output",
   display: "output",
   headphone: "output",
@@ -71,8 +79,39 @@ const CATEGORY_ROLE: Partial<Record<DeviceCategory, NodeRole>> = {
   software_broadcast: "output",
 };
 
-function roleOf(category: DeviceCategory): NodeRole {
-  return CATEGORY_ROLE[category] ?? "hub";
+function roleOf(graph: BuiltGraph, resolved: ResolvedNode): NodeRole {
+  if (resolved.model.category === "software_conferencing") return joinRole(graph, resolved);
+  return CATEGORY_ROLE[resolved.model.category] ?? "hub";
+}
+
+/**
+ * A meeting join is whatever its wiring makes it.
+ *
+ * Fixing it at `input` read the room right for an online speaker — a remote
+ * participant is someone talking into the room, and the send back to them
+ * belongs in the return lane. But a join used only to send to a satellite room
+ * is a sink, and pinning that left drops the entire main signal into the return
+ * lane, which makes the diagram lie about where the show is going.
+ *
+ * A join that runs on a computer is drawn inside it and so has no column of its
+ * own; the role then only tints the band. It still decides the column for a
+ * join with no host, which is how a remote participant nobody wrote a laptop
+ * for stays on the left.
+ */
+function joinRole(graph: BuiltGraph, resolved: ResolvedNode): NodeRole {
+  let wiredIn = false;
+  let wiredOut = false;
+  for (const port of resolved.model.ports) {
+    // `isPortWired` counts only cables and device selections. Space edges sit
+    // on both faces of every join in a meeting, so counting those would make
+    // every join look like "both" and this would be a fixed role again.
+    if (!isPortWired(graph, resolved.id, port)) continue;
+    if (port.direction === "out") wiredOut = true;
+    else wiredIn = true;
+  }
+  // Both wired, or nothing wired yet: `input`, which keeps a freshly added join
+  // on the left where people look for it.
+  return wiredIn && !wiredOut ? "output" : "input";
 }
 
 export type LayoutNode = {
@@ -80,9 +119,17 @@ export type LayoutNode = {
   label: string;
   /** `null` for the room itself. */
   category: DeviceCategory | null;
-  spaceKind: "acoustic" | "visual" | null;
+  spaceKind: SpaceKind | null;
   /** `null` for the room, which follows whatever feeds it. */
   role: NodeRole | null;
+  /** The box this one is drawn *inside* — the computer an app runs on. */
+  parentKey: string | null;
+  /** 0 at the top level; 1 for an app on a computer. */
+  depth: number;
+  /** The place frame this box sits in, or `null` when its location is unknown. */
+  frameKey: string | null;
+  /** The meeting a join is in, for the chip on its box. */
+  meetingLabel: string | null;
   column: number;
   row: number;
   x: number;
@@ -90,6 +137,25 @@ export type LayoutNode = {
   width: number;
   height: number;
   ports: LayoutPort[];
+};
+
+/**
+ * A place drawn as a frame round everything in it.
+ *
+ * This is the one thing in the diagram that means containment, which is why it
+ * gets a border: `LayoutBand` deliberately does not, because a role is not a
+ * container. An acoustic and a visual space sharing a `venueKey` are one room
+ * and get one frame — that is what `venueKey` was reserved for.
+ */
+export type LayoutFrame = {
+  key: string;
+  label: string;
+  /** Every space kind the place covers, in document order. */
+  spaceKinds: SpaceKind[];
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 export type Point = { x: number; y: number };
@@ -137,6 +203,7 @@ export type Layout = {
   nodes: LayoutNode[];
   edges: LayoutEdge[];
   bands: LayoutBand[];
+  frames: LayoutFrame[];
   columns: number;
   rows: number;
   width: number;
@@ -154,6 +221,7 @@ export type LayoutOptions = {
 };
 
 const SPACE_PREFIX = "space:";
+const PLACE_PREFIX = "place:";
 
 const PADDING = 24;
 const BOX_WIDTH = 184;
@@ -170,14 +238,27 @@ const ELBOW = 14;
  * loop reads as a second, dashed border on the box instead of as a cable.
  */
 const ESCAPE = 18;
-const LANE_GAP = 30;
-const LANE_PITCH = 14;
+/** The lanes under the diagram that the loop-closing edges take. */
+const RETURN_LANE_GAP = 30;
+const RETURN_LANE_PITCH = 14;
 const ORDER_SWEEPS = 4;
 const ALIGN_PASSES = 4;
 /** Room above the boxes for the band captions. */
 const BAND_HEADER = 28;
 /** Gutter left between two bands, so they read as neighbours and not as one. */
 const BAND_GUTTER = 14;
+/** How far inside its machine an app is drawn. Also the gutter its cable takes. */
+const NEST_PAD = 12;
+/** Between two apps on one computer. */
+const NEST_GAP = 8;
+/** Breathing room between a place frame and the boxes it holds. */
+const FRAME_PAD = 14;
+/** Room above a place frame's content for its caption. */
+const FRAME_HEADER = 20;
+/** Between two places, which are stacked as horizontal lanes. */
+const PLACE_GAP = 30;
+/** The lane for everything whose place is unknown. Sorts last. */
+const NO_PLACE = "";
 
 function columnX(column: number): number {
   return PADDING + column * (BOX_WIDTH + COL_GAP);
@@ -197,10 +278,19 @@ type Box = {
   label: string;
   category: DeviceCategory | null;
   role: NodeRole | null;
-  /** The computer this app runs on, for software nodes. */
-  hostKey: string | null;
-  spaceKind: "acoustic" | "visual" | null;
+  /** The box this one is drawn inside — the computer an app runs on. */
+  parentKey: string | null;
+  children: Box[];
+  /** Where the children start, relative to the box top. */
+  contentTop: number;
+  depth: number;
+  /** The place this box is in, which is the lane it is laid out in. */
+  placeKey: string | null;
+  /** The meeting a join is in. Not a place: a join is inside its computer. */
+  meetingLabel: string | null;
+  spaceKind: SpaceKind | null;
   ports: BoxPort[];
+  width: number;
   height: number;
 };
 
@@ -229,22 +319,72 @@ function vertexPort(graph: BuiltGraph, vertexId: VertexId): string | null {
 }
 
 export function layoutGraph(graph: BuiltGraph, options: LayoutOptions = {}): Layout {
-  const boxes = collectBoxes(graph);
-  const edges = collectEdges(graph, boxes);
-  const keys = [...boxes.keys()];
+  const places = collectPlaces(graph);
+  const boxes = collectBoxes(graph, places);
+  const roots = rootKeys(boxes);
+  // Only the top level takes part in the column stages: an app has no column of
+  // its own, it is inside the machine that has one.
+  const keys = [...boxes.values()].filter((box) => box.parentKey === null).map((box) => box.key);
 
-  const { forward, back } = splitByDirection(keys, edges, boxes);
+  const edges = collectEdges(graph, boxes);
+  // Ranking and ordering see the machine, not what is inside it. Ids survive the
+  // projection, so the dummies these produce are still found by the real edge.
+  const structural = projectToRoots(edges, roots);
+
+  const { forward } = splitByDirection(keys, structural, boxes);
   const column = rankByRole(keys, forward, boxes);
+  for (const box of boxes.values()) {
+    if (box.parentKey === null) continue;
+    column.set(box.key, column.get(roots.get(box.key) ?? box.key) ?? 0);
+  }
 
   const { items, segments } = insertDummies(keys, forward, column);
-  const order = orderRows(items, segments, boxes, options.order);
-  const y = assignRows(order, boxes, segments);
+  const lanes = laneOfEach(boxes, items, forward, places);
+  const order = orderRows(items, segments, lanes, laneOrder(lanes, places), options.order);
+  const y = assignRows(order, boxes, segments, lanes, laneOrder(lanes, places), places);
 
-  return buildLayout(boxes, edges, forward, back, column, order, y);
+  return buildLayout(places, boxes, edges, forward, column, order, y);
 }
 
-function collectBoxes(graph: BuiltGraph): Map<string, Box> {
+/**
+ * The physical places, keyed so that several spaces can be one room.
+ *
+ * `venueKey` was reserved for exactly this — "these two spaces are the same
+ * room" — so a hall's acoustic space and its visual space collapse to one frame
+ * instead of drawing the same room twice. A meeting is not a place: it is a path
+ * between places, and the joins in it are already inside their computers.
+ */
+type Place = { key: string; label: string; spaceKinds: SpaceKind[]; rank: number };
+
+function collectPlaces(graph: BuiltGraph): Map<string, Place> {
+  const places = new Map<string, Place>();
+  for (const space of graph.spaces.values()) {
+    const key = placeKeyOf(space);
+    if (!key) continue;
+    const existing = places.get(key);
+    if (existing) {
+      if (!existing.spaceKinds.includes(space.kind)) existing.spaceKinds.push(space.kind);
+      continue;
+    }
+    places.set(key, { key, label: space.label, spaceKinds: [space.kind], rank: places.size });
+  }
+  return places;
+}
+
+function placeKeyOf(space: Space): string | null {
+  if (space.kind === "transport") return null;
+  return `${PLACE_PREFIX}${space.venueKey ?? space.id}`;
+}
+
+function collectBoxes(graph: BuiltGraph, places: Map<string, Place>): Map<string, Box> {
   const boxes = new Map<string, Box>();
+  const placeOfSpace = new Map<string, string>();
+  const meetingOfSpace = new Map<string, string>();
+  for (const space of graph.spaces.values()) {
+    const key = placeKeyOf(space);
+    if (key && places.has(key)) placeOfSpace.set(space.id, key);
+    if (space.kind === "transport") meetingOfSpace.set(space.id, space.label);
+  }
 
   for (const resolved of graph.nodes.values()) {
     const ports: BoxPort[] = [];
@@ -259,15 +399,22 @@ function collectBoxes(graph: BuiltGraph): Map<string, Box> {
         dy: HEADER_HEIGHT + index * PORT_PITCH + PORT_PITCH / 2,
       });
     }
+    const spaceId = resolved.node.spaceId;
     boxes.set(resolved.id, {
       key: resolved.id,
       kind: "node",
       label: nodeLabel(resolved),
       category: resolved.model.category,
-      role: roleOf(resolved.model.category),
-      hostKey: resolved.node.hostNodeId ?? null,
+      role: roleOf(graph, resolved),
+      parentKey: resolved.node.hostNodeId ?? null,
+      children: [],
+      contentTop: 0,
+      depth: 0,
+      placeKey: spaceId ? (placeOfSpace.get(spaceId) ?? null) : null,
+      meetingLabel: spaceId ? (meetingOfSpace.get(spaceId) ?? null) : null,
       spaceKind: null,
       ports,
+      width: BOX_WIDTH,
       height: boxHeight(nextIndex.in, nextIndex.out),
     });
   }
@@ -280,14 +427,91 @@ function collectBoxes(graph: BuiltGraph): Map<string, Box> {
       label: space.label,
       category: null,
       role: null,
-      hostKey: null,
+      parentKey: null,
+      children: [],
+      contentTop: 0,
+      depth: 0,
+      placeKey: placeOfSpace.get(space.id) ?? null,
+      meetingLabel: null,
       spaceKind: space.kind,
       ports: [],
+      width: BOX_WIDTH,
       height: BOX_MIN_HEIGHT,
     });
   }
 
+  nestBoxes(boxes);
   return boxes;
+}
+
+/**
+ * Files each app inside the machine it runs on, and grows the machine to hold
+ * it.
+ *
+ * The child keeps its own ports and its own box; it just lives in its parent's
+ * lower half, below the parent's own jacks. A machine's height is therefore
+ * known before anything is placed, which is what lets the column stages treat
+ * it as one item and never learn that nesting exists.
+ */
+function nestBoxes(boxes: Map<string, Box>): void {
+  for (const box of boxes.values()) {
+    if (box.parentKey !== null && !boxes.has(box.parentKey)) box.parentKey = null;
+  }
+  breakHostCycles(boxes);
+
+  for (const box of boxes.values()) {
+    const parent = box.parentKey === null ? undefined : boxes.get(box.parentKey);
+    parent?.children.push(box);
+  }
+  for (const box of boxes.values()) {
+    if (box.parentKey === null) sizeNested(box, 0);
+  }
+}
+
+/** A machine cannot run inside an app that runs inside it. */
+function breakHostCycles(boxes: Map<string, Box>): void {
+  for (const box of boxes.values()) {
+    const seen = new Set<string>([box.key]);
+    let key = box.parentKey;
+    while (key !== null) {
+      if (seen.has(key)) {
+        box.parentKey = null;
+        break;
+      }
+      seen.add(key);
+      key = boxes.get(key)?.parentKey ?? null;
+    }
+  }
+}
+
+function sizeNested(box: Box, depth: number): void {
+  box.depth = depth;
+  for (const child of box.children) {
+    child.width = box.width - 2 * NEST_PAD;
+    sizeNested(child, depth + 1);
+  }
+  if (box.children.length === 0) return;
+  const inner = box.children.reduce(
+    (total, child, index) => total + child.height + (index === 0 ? 0 : NEST_GAP),
+    0,
+  );
+  box.contentTop = box.height + NEST_PAD;
+  box.height = box.contentTop + inner + NEST_PAD;
+}
+
+/** Every box mapped to the top-level box it is drawn inside. */
+function rootKeys(boxes: Map<string, Box>): Map<string, string> {
+  const roots = new Map<string, string>();
+  for (const box of boxes.values()) {
+    let current = box;
+    while (current.parentKey !== null) {
+      const parent = boxes.get(current.parentKey);
+      if (!parent) break;
+      current = parent;
+    }
+    roots.set(box.key, current.key);
+  }
+  return roots;
 }
 
 function boxHeight(ins: number, outs: number): number {
@@ -320,6 +544,11 @@ function collectEdges(graph: BuiltGraph, boxes: Map<string, Box>): DrawnEdge[] {
       const existing = spaces.get(key);
       if (existing) {
         existing.sourceIds.push(edge.id);
+        // A meeting carries audio and video down the same collapsed line, so
+        // the first edge's media are not the whole story.
+        for (const medium of edge.media) {
+          if (!existing.media.includes(medium)) existing.media.push(medium);
+        }
         continue;
       }
       const collapsed: DrawnEdge = {
@@ -356,6 +585,68 @@ function collectEdges(graph: BuiltGraph, boxes: Map<string, Box>): DrawnEdge[] {
 
 function linkIdOf(edge: GraphEdge): string | null {
   return edge.linkId ?? null;
+}
+
+/**
+ * Re-points every edge at the machine that holds its end.
+ *
+ * Ranking a nested app on its own put OBS out among the speakers, and the old
+ * fix was to rank it and then drag it back to its host. Contracting the machine
+ * first says the same thing once: a cable into an app is a cable into the box
+ * you can actually plug into. A link between an app and its own host collapses
+ * to a self-edge and drops out, which is right — it constrains no ordering.
+ */
+function projectToRoots(
+  edges: readonly DrawnEdge[],
+  roots: Map<string, string>,
+): readonly DrawnEdge[] {
+  const projected: DrawnEdge[] = [];
+  for (const edge of edges) {
+    const from = roots.get(edge.from) ?? edge.from;
+    const to = roots.get(edge.to) ?? edge.to;
+    if (from === to) continue;
+    projected.push(from === edge.from && to === edge.to ? edge : { ...edge, from, to });
+  }
+  return projected;
+}
+
+/**
+ * The lane every laid-out item belongs to, which is its place.
+ *
+ * A dummy takes the lane of the box its edge left, so a cable crossing between
+ * two rooms travels in the room it started in and changes lane at the far end
+ * rather than wandering through the rooms in between.
+ */
+function laneOfEach(
+  boxes: Map<string, Box>,
+  items: Items,
+  forward: readonly DrawnEdge[],
+  places: Map<string, Place>,
+): Map<string, string> {
+  const lanes = new Map<string, string>();
+  for (const box of boxes.values()) {
+    if (box.parentKey !== null) continue;
+    const place = box.placeKey;
+    lanes.set(box.key, place !== null && places.has(place) ? place : NO_PLACE);
+  }
+
+  const byId = new Map(forward.map((edge) => [edge.id, edge]));
+  for (const [key, dummy] of items.dummies) {
+    const edge = byId.get(dummy.edgeId);
+    lanes.set(key, (edge && lanes.get(edge.from)) ?? NO_PLACE);
+  }
+  return lanes;
+}
+
+/** Places in document order, then everything whose place is unknown. */
+function laneOrder(lanes: Map<string, string>, places: Map<string, Place>): string[] {
+  const used = new Set(lanes.values());
+  const order = [...places.values()]
+    .filter((place) => used.has(place.key))
+    .sort((a, b) => a.rank - b.rank)
+    .map((place) => place.key);
+  if (used.has(NO_PLACE)) order.push(NO_PLACE);
+  return order;
 }
 
 /**
@@ -399,7 +690,7 @@ function rankByRole(
   forward: readonly DrawnEdge[],
   boxes: Map<string, Box>,
 ): Map<string, number> {
-  const hasInput = [...boxes.values()].some((box) => box.role === "input");
+  const hasInput = keys.some((key) => boxes.get(key)?.role === "input");
   const floorFor = (key: string, output: number): number | undefined => {
     const role = boxes.get(key)?.role;
     if (role === "input") return 0;
@@ -419,32 +710,13 @@ function rankByRole(
   const first = rankNodes(keys, forward, floors(hasInput ? 1 : 0));
 
   let deepest = 0;
-  for (const [key, box] of boxes) {
-    if (box.kind === "space" || box.role === "output") continue;
+  for (const key of keys) {
+    const box = boxes.get(key);
+    if (!box || box.kind === "space" || box.role === "output") continue;
     deepest = Math.max(deepest, first.get(key) ?? 0);
   }
 
-  return pinToHosts(rankNodes(keys, forward, floors(deepest + 1)), boxes);
-}
-
-/**
- * Sits an app in the same column as the computer it runs on.
- *
- * A software node is not another stage of the signal chain — it is inside the
- * machine, and ranking it by where the signal reaches puts OBS out among the
- * speakers, which is not where anyone looks for it. Role wins over this: a
- * conferencing app stays pinned left with the mics, because a remote
- * participant reads as someone talking into the room rather than as part of the
- * computer. The link to the host then runs within the column, which
- * `routeSibling` draws as a short connector down the side.
- */
-function pinToHosts(rank: Map<string, number>, boxes: Map<string, Box>): Map<string, number> {
-  for (const [key, box] of boxes) {
-    if (box.hostKey === null || box.role === "input") continue;
-    const host = rank.get(box.hostKey);
-    if (host !== undefined) rank.set(key, host);
-  }
-  return rank;
+  return rankNodes(keys, forward, floors(deepest + 1));
 }
 
 /**
@@ -607,7 +879,8 @@ function insertDummies(
 function orderRows(
   items: Items,
   segments: readonly Segment[],
-  boxes: Map<string, Box>,
+  lanes: Map<string, string>,
+  order: readonly string[],
   seed?: readonly string[],
 ): string[][] {
   const rank = new Map<string, number>();
@@ -647,31 +920,30 @@ function orderRows(
     }
   }
 
-  return columns.map((column) => hostsFirst(column, boxes));
+  const rankOfLane = new Map(order.map((lane, index) => [lane, index]));
+  return columns.map((column) => byLane(column, lanes, rankOfLane));
 }
 
 /**
- * Moves each app to sit directly after the computer it runs on.
+ * Sorts each column by place, so the rows already read as lanes before
+ * `separateLanes` makes them into ones.
  *
- * The link between them was left out of the ordering — it points nowhere, both
- * ends being in this column — so nothing else would keep them together, and an
- * app floating a long way from its host reads as a separate machine.
+ * Correctness does not need this — separating the lanes is a rigid shift per
+ * lane, so it cannot make two boxes collide whatever order they were in. What
+ * it buys is that the median heuristic's work survives: without it a column
+ * would be reshuffled at the very end and every straightened edge would bend
+ * again.
  */
-function hostsFirst(column: readonly string[], boxes: Map<string, Box>): string[] {
-  const hosted = column.filter((key) => {
-    const host = boxes.get(key)?.hostKey;
-    return host !== null && host !== undefined && column.includes(host);
-  });
-  if (hosted.length === 0) return [...column];
-
-  const result = column.filter((key) => !hosted.includes(key));
-  for (const key of hosted) {
-    const host = boxes.get(key)?.hostKey;
-    const at = host === undefined || host === null ? -1 : result.indexOf(host);
-    if (at < 0) result.push(key);
-    else result.splice(at + 1, 0, key);
-  }
-  return result;
+function byLane(
+  column: readonly string[],
+  lanes: Map<string, string>,
+  rankOfLane: Map<string, number>,
+): string[] {
+  return [...column].sort(
+    (a, b) =>
+      (rankOfLane.get(lanes.get(a) ?? NO_PLACE) ?? 0) -
+      (rankOfLane.get(lanes.get(b) ?? NO_PLACE) ?? 0),
+  );
 }
 
 function push(map: Map<string, string[]>, key: string, value: string): void {
@@ -714,6 +986,9 @@ function assignRows(
   columns: readonly string[][],
   boxes: Map<string, Box>,
   segments: readonly Segment[],
+  lanes: Map<string, string>,
+  order: readonly string[],
+  places: Map<string, Place>,
 ): Map<string, number> {
   const heightOf = (key: string) => boxes.get(key)?.height ?? DUMMY_HEIGHT;
   const y = new Map<string, number>();
@@ -759,37 +1034,60 @@ function assignRows(
     }
   }
 
-  // An app belongs immediately under its host, whatever the alignment did to
-  // the host — the two are one machine, and a gap between them says otherwise.
-  for (const items of columns) {
-    let moved = false;
-    for (const key of items) {
-      const host = boxes.get(key)?.hostKey;
-      if (!host || !items.includes(host)) continue;
-      const hostY = y.get(host);
-      const hostBox = boxes.get(host);
-      if (hostY === undefined || !hostBox) continue;
-      y.set(key, hostY + hostBox.height + ROW_GAP);
-      moved = true;
-    }
-    if (!moved) continue;
-    const heights = items.map(heightOf);
-    const settled = packDown(
-      items.map((key) => y.get(key) ?? 0),
-      heights,
-    );
-    items.forEach((key, index) => y.set(key, settled[index] ?? 0));
-  }
-
-  // Every column was laid out from its own origin; share one.
-  let top = Number.POSITIVE_INFINITY;
-  for (const items of columns) {
-    for (const key of items) top = Math.min(top, y.get(key) ?? 0);
-  }
-  if (!Number.isFinite(top)) top = 0;
-  for (const [key, value] of y) y.set(key, value - top + PADDING + BAND_HEADER);
-
+  separateLanes(columns, y, heightOf, lanes, order, places);
   return y;
+}
+
+/**
+ * Stacks the places into horizontal lanes, and gives every column one origin.
+ *
+ * Each lane is moved as a rigid body, so nothing inside one can collide with
+ * anything else in it — the alignment passes already settled that — and the
+ * lanes end up on disjoint bands of rows, so nothing in one room can land
+ * between two things in another. That is the property a frame needs: a plain
+ * bounding box round a room's members would otherwise swallow a box from the
+ * room next door that happened to be laid out between them.
+ *
+ * With one lane and no frame this is the shared-origin shift the layout has
+ * always ended with.
+ */
+function separateLanes(
+  columns: readonly string[][],
+  y: Map<string, number>,
+  heightOf: (key: string) => number,
+  lanes: Map<string, string>,
+  order: readonly string[],
+  places: Map<string, Place>,
+): void {
+  const extents = new Map<string, { top: number; bottom: number }>();
+  for (const items of columns) {
+    for (const key of items) {
+      const lane = lanes.get(key) ?? NO_PLACE;
+      const top = y.get(key) ?? 0;
+      const bottom = top + heightOf(key);
+      const extent = extents.get(lane);
+      if (!extent) extents.set(lane, { top, bottom });
+      else {
+        extent.top = Math.min(extent.top, top);
+        extent.bottom = Math.max(extent.bottom, bottom);
+      }
+    }
+  }
+
+  const shifts = new Map<string, number>();
+  let cursor = PADDING + BAND_HEADER;
+  for (const lane of order) {
+    const extent = extents.get(lane);
+    if (!extent) continue;
+    const framed = places.has(lane);
+    const head = framed ? FRAME_HEADER + FRAME_PAD : 0;
+    shifts.set(lane, cursor + head - extent.top);
+    cursor += head + (extent.bottom - extent.top) + (framed ? FRAME_PAD : 0) + PLACE_GAP;
+  }
+
+  for (const [key, value] of y) {
+    y.set(key, value + (shifts.get(lanes.get(key) ?? NO_PLACE) ?? 0));
+  }
 }
 
 function packDown(desired: readonly number[], heights: readonly number[]): number[] {
@@ -814,31 +1112,36 @@ function packUp(desired: readonly number[], heights: readonly number[]): number[
   return result;
 }
 
-type PlacedBox = Box & { column: number; row: number; x: number; y: number; width: number };
+type PlacedBox = Box & { column: number; row: number; x: number; y: number };
 
 function buildLayout(
+  places: Map<string, Place>,
   boxes: Map<string, Box>,
   edges: readonly DrawnEdge[],
   forward: readonly DrawnEdge[],
-  back: readonly DrawnEdge[],
   column: Map<string, number>,
   columns: readonly string[][],
   y: Map<string, number>,
 ): Layout {
   const placed = new Map<string, PlacedBox>();
+  const place = (box: Box, x: number, top: number, col: number, row: number) => {
+    placed.set(box.key, { ...box, column: col, row, x, y: top });
+    // The children go in the machine's lower half, under its own jacks. Their
+    // heights were folded into its height before anything was ranked, so this
+    // cannot push anything out of the box it was given.
+    let cursor = top + box.contentTop;
+    for (const child of box.children) {
+      place(child, x + NEST_PAD, cursor, col, row);
+      cursor += child.height + NEST_GAP;
+    }
+  };
+
   columns.forEach((items, col) => {
     let row = 0;
     for (const key of items) {
       const box = boxes.get(key);
       if (!box) continue;
-      placed.set(key, {
-        ...box,
-        column: col,
-        row: row++,
-        x: columnX(col),
-        y: y.get(key) ?? PADDING,
-        width: BOX_WIDTH,
-      });
+      place(box, columnX(col), y.get(key) ?? PADDING, col, row++);
     }
   });
 
@@ -852,6 +1155,10 @@ function buildLayout(
         category: box.category,
         role: box.role,
         spaceKind: box.spaceKind,
+        parentKey: box.parentKey,
+        depth: box.depth,
+        frameKey: box.placeKey !== null && places.has(box.placeKey) ? box.placeKey : null,
+        meetingLabel: box.meetingLabel,
         column: box.column,
         row: box.row,
         x: box.x,
@@ -874,7 +1181,7 @@ function buildLayout(
   for (const node of nodes) bottom = Math.max(bottom, node.y + node.height);
 
   const laid: LayoutEdge[] = [];
-  const forwardSet = new Set(forward);
+  const forwardIds = new Set(forward.map((edge) => edge.id));
   let lane = 0;
 
   for (const edge of edges) {
@@ -883,12 +1190,18 @@ function buildLayout(
     if (!from || !to) continue;
     const a = anchorOf(from, edge.fromPort, "right");
     const b = anchorOf(to, edge.toPort, "left");
+    const inner = nestedInside(from, to, placed)
+      ? from
+      : nestedInside(to, from, placed)
+        ? to
+        : null;
     const sameColumn = to.column === from.column;
-    const isForward = forwardSet.has(edge) && to.column > from.column;
+    const isForward = forwardIds.has(edge.id) && to.column > from.column;
     let points: Point[];
-    if (sameColumn) points = routeSibling(a, b, from, to);
+    if (inner) points = routeNested(a, b, inner, from, to);
+    else if (sameColumn) points = routeSibling(a, b, from, to);
     else if (isForward) points = routeForward(a, b, from, to, waypoints(edge, columns, column, y));
-    else points = routeBack(a, b, bottom + LANE_GAP + lane++ * LANE_PITCH);
+    else points = routeBack(a, b, bottom + RETURN_LANE_GAP + lane++ * RETURN_LANE_PITCH);
     laid.push({
       id: edge.id,
       from: edge.from,
@@ -899,15 +1212,20 @@ function buildLayout(
       media: edge.media,
       linkId: edge.linkId,
       sourceIds: edge.sourceIds,
-      back: !isForward && !sameColumn,
+      back: inner === null && !isForward && !sameColumn,
       points,
     });
   }
 
+  const frames = computeFrames(places, placed);
   const order = columns.flat();
   let width = PADDING;
   let height = bottom + PADDING;
   for (const node of nodes) width = Math.max(width, node.x + node.width);
+  for (const frame of frames) {
+    width = Math.max(width, frame.x + frame.width);
+    height = Math.max(height, frame.y + frame.height + PADDING);
+  }
   for (const edge of laid) {
     for (const point of edge.points) height = Math.max(height, point.y + PADDING);
   }
@@ -918,12 +1236,69 @@ function buildLayout(
     nodes,
     edges: laid,
     bands: computeBands(nodes, columnCount, width),
+    frames,
     columns: columnCount,
     rows: columns.reduce((max, items) => Math.max(max, items.length), 0),
     width,
     height,
     order,
   };
+}
+
+/** Is `inner` drawn inside `outer`? */
+function nestedInside(inner: PlacedBox, outer: PlacedBox, placed: Map<string, PlacedBox>): boolean {
+  let key = inner.parentKey;
+  while (key !== null) {
+    if (key === outer.key) return true;
+    key = placed.get(key)?.parentKey ?? null;
+  }
+  return false;
+}
+
+/**
+ * A frame round everything in one place.
+ *
+ * Only top-level boxes are measured: what is nested is already inside the box
+ * that holds it. A place holding nothing but its own air gets no frame — a
+ * border round one pill states nothing the pill does not.
+ */
+function computeFrames(places: Map<string, Place>, placed: Map<string, PlacedBox>): LayoutFrame[] {
+  const members = new Map<string, PlacedBox[]>();
+  for (const box of placed.values()) {
+    if (box.parentKey !== null || box.placeKey === null) continue;
+    if (!places.has(box.placeKey)) continue;
+    const list = members.get(box.placeKey);
+    if (list) list.push(box);
+    else members.set(box.placeKey, [box]);
+  }
+
+  const frames: LayoutFrame[] = [];
+  for (const place of [...places.values()].sort((a, b) => a.rank - b.rank)) {
+    const inside = members.get(place.key);
+    if (!inside || !inside.some((box) => box.kind === "node")) continue;
+
+    let left = Number.POSITIVE_INFINITY;
+    let top = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    let bottom = Number.NEGATIVE_INFINITY;
+    for (const box of inside) {
+      left = Math.min(left, box.x);
+      top = Math.min(top, box.y);
+      right = Math.max(right, box.x + box.width);
+      bottom = Math.max(bottom, box.y + box.height);
+    }
+
+    frames.push({
+      key: place.key,
+      label: place.label,
+      spaceKinds: place.spaceKinds,
+      x: left - FRAME_PAD,
+      y: top - FRAME_PAD - FRAME_HEADER,
+      width: right - left + 2 * FRAME_PAD,
+      height: bottom - top + 2 * FRAME_PAD + FRAME_HEADER,
+    });
+  }
+  return frames;
 }
 
 /**
@@ -1048,6 +1423,27 @@ function routeForward(a: Anchor, b: Anchor, from: PlacedBox, to: PlacedBox, via:
 
 function escapeLane(y: number, box: PlacedBox): number {
   return y < box.y + box.height / 2 ? box.y - ESCAPE : box.y + box.height + ESCAPE;
+}
+
+/**
+ * An app wired to a jack of the machine it is drawn inside.
+ *
+ * `orientHostAssignment` only ever produces same-face links (out→out when an app
+ * plays into a jack, in→in when it captures from one), so the connector runs up
+ * the gutter between the app's border and the machine's — the only strip of the
+ * machine nothing else is drawn in, including its other apps. Anything else
+ * between the two is not a device selection, and falls back to the sibling
+ * route.
+ */
+function routeNested(a: Anchor, b: Anchor, inner: PlacedBox, from: PlacedBox, to: PlacedBox) {
+  if (a.side !== b.side) return routeSibling(a, b, from, to);
+  const gutter = a.side === "right" ? inner.x + inner.width + NEST_PAD / 2 : inner.x - NEST_PAD / 2;
+  return [
+    { x: a.x, y: a.y },
+    { x: gutter, y: a.y },
+    { x: gutter, y: b.y },
+    { x: b.x, y: b.y },
+  ];
 }
 
 /**

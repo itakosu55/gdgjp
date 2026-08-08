@@ -1,4 +1,5 @@
 import type { LintContext } from "./diagnostics";
+import type { SetupDoc } from "./schema";
 import type {
   Device,
   DeviceCategory,
@@ -33,6 +34,28 @@ function port(spec: PortSpec): DeviceModelPort {
 
 function bus(key: string, kind: DeviceModelBus["kind"]): DeviceModelBus {
   return { key, label: key, kind };
+}
+
+/**
+ * The eight ports a meeting join exposes.
+ *
+ * `mic_in` / `spk_out` alone cannot express a screen share, and screen-share
+ * audio is split from its video for the same reason USB audio is two ports:
+ * "the video's sound is in the room but not on the stream" is exactly that
+ * asymmetry, and one combined port hides it. Unwired ports emit no edges, so
+ * a one-way feed costs no extra data entry.
+ */
+function joinPorts(): DeviceModelPort[] {
+  return [
+    port({ key: "mic_in", direction: "in", signal: "audio_digital" }),
+    port({ key: "cam_video_in", direction: "in", signal: "video" }),
+    port({ key: "share_audio_in", direction: "in", signal: "audio_digital" }),
+    port({ key: "share_video_in", direction: "in", signal: "video" }),
+    port({ key: "spk_out", direction: "out", signal: "audio_digital" }),
+    port({ key: "cam_video_out", direction: "out", signal: "video" }),
+    port({ key: "share_audio_out", direction: "out", signal: "audio_digital" }),
+    port({ key: "share_video_out", direction: "out", signal: "video" }),
+  ];
 }
 
 function model(spec: {
@@ -190,12 +213,36 @@ export const MODELS: DeviceModel[] = [
     name: "Google Meet",
     category: "software_conferencing",
     // Never `passthrough`: a conferencing app does not route the local mic to
-    // the local speaker, and pretending it does invents an echo loop.
+    // the local speaker, and pretending it does invents an echo loop. What a
+    // join reaches is its *meeting*, which is a transport space, not an
+    // internal route.
     internalRouting: "none",
-    ports: [
-      port({ key: "mic_in", direction: "in", signal: "audio_digital" }),
-      port({ key: "spk_out", direction: "out", signal: "audio_digital" }),
-    ],
+    ports: joinPorts(),
+  }),
+  model({
+    id: "m_vdo",
+    name: "VDO.Ninja",
+    category: "software_conferencing",
+    internalRouting: "none",
+    ports: joinPorts(),
+  }),
+  // A laptop's built-in transducers are separate nodes, because `computer` has
+  // no space coupling and so cannot touch a room by itself. Modelling them is
+  // what makes a presenter's own machine visible on the patch sheet at all.
+  // No connector and no level: there is no jack to mismatch.
+  model({
+    id: "m_builtin_mic",
+    name: "PC 内蔵マイク",
+    category: "mic",
+    internalRouting: "none",
+    ports: [port({ key: "out", direction: "out", signal: "audio_analog" })],
+  }),
+  model({
+    id: "m_builtin_spk",
+    name: "PC 内蔵スピーカー",
+    category: "speaker",
+    internalRouting: "none",
+    ports: [port({ key: "in", direction: "in", signal: "audio_analog" })],
   }),
   model({
     id: "m_camera",
@@ -259,9 +306,16 @@ export const DEVICES: Device[] = [
   { id: "d_mic2", modelId: "m_mic_dynamic", name: "ハンドマイク2" },
   { id: "d_condenser", modelId: "m_mic_condenser", name: "コンデンサーマイク" },
   { id: "d_mixer", modelId: "m_mixer", name: "ミキサー" },
+  { id: "d_mixer2", modelId: "m_mixer", name: "別室ミキサー" },
   { id: "d_speaker", modelId: "m_speaker", name: "会場スピーカー" },
+  { id: "d_speaker2", modelId: "m_speaker", name: "別室スピーカー" },
   { id: "d_pc", modelId: "m_pc", name: "配信PC" },
+  { id: "d_laptop", modelId: "m_pc", name: "登壇者ノートPC" },
+  { id: "d_builtin_mic", modelId: "m_builtin_mic", name: "ノートPC内蔵マイク" },
+  { id: "d_builtin_spk", modelId: "m_builtin_spk", name: "ノートPC内蔵スピーカー" },
   { id: "d_obs", modelId: "m_obs", name: "OBS" },
+  // Software is referenced by `modelId` now. This row stays so one test still
+  // proves a `deviceId`-referencing software node keeps resolving.
   { id: "d_meet", modelId: "m_meet", name: "Meet" },
   { id: "d_camera", modelId: "m_camera", name: "カメラ" },
   { id: "d_capture", modelId: "m_capture", name: "キャプチャ" },
@@ -269,6 +323,146 @@ export const DEVICES: Device[] = [
   { id: "d_house_pa", modelId: "m_house_pa", name: "会場PA" },
   { id: "d_recorder", modelId: "m_recorder", name: "レコーダー" },
 ];
+
+/**
+ * A presenter shares a video from their own laptop, joined to the same meeting
+ * as the streaming PC and sitting in the same room. Their machine appears on no
+ * patch sheet, and the loop it closes cannot be cancelled: the sound came back
+ * through *another* join's speaker, so the canceller has no reference for it.
+ *
+ * The hall mic is deliberately not routed to MAIN, so the only cycle in this
+ * document is the transport one and the test cannot pass on plain howling.
+ */
+export function twoJoinsInOneHall(): SetupDoc {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      { id: "sp_hall", kind: "acoustic", label: "メインホール" },
+      { id: "sp_mtg", kind: "transport", label: "登壇 Meet", meetingKey: "meet-abc" },
+    ],
+    nodes: [
+      // The mixer and the two computers couple to nothing, so `spaceId` buys the
+      // graph nothing here — it says where they are standing, which is what the
+      // diagram frames them by. The laptop being in the hall is the whole point
+      // of this fixture.
+      { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+      { id: "n_mixer", deviceId: "d_mixer", spaceId: "sp_hall" },
+      { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+      { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
+      { id: "n_join_stream", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+      { id: "n_laptop", deviceId: "d_laptop", spaceId: "sp_hall" },
+      { id: "n_laptop_mic", deviceId: "d_builtin_mic", spaceId: "sp_hall" },
+      { id: "n_join_laptop", modelId: "m_meet", hostNodeId: "n_laptop", spaceId: "sp_mtg" },
+    ],
+    links: [
+      { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+      { id: "l2", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+      { id: "l3", from: ["n_join_stream", "spk_out"], to: ["n_pc", "usb_out"] },
+      { id: "l4", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
+      { id: "l5", from: ["n_laptop_mic", "out"], to: ["n_laptop", "line_in"] },
+      { id: "l6", from: ["n_laptop", "line_in"], to: ["n_join_laptop", "mic_in"] },
+    ],
+    routing: [{ nodeId: "n_mixer", inPort: "usb_in", bus: "main" }],
+  };
+}
+
+/**
+ * The hall is relayed to a satellite room over the same meeting, and both ends
+ * reinforce what they receive. Two acoustic spaces nothing physically connects
+ * are coupled through the transport space, and the single cycle crosses the
+ * meeting twice — once per sender vertex.
+ */
+export function satelliteRooms(): SetupDoc {
+  const room = (
+    suffix: string,
+    spaceId: string,
+    mic: string,
+    mixer: string,
+    speaker: string,
+    pc: string,
+  ) => ({
+    nodes: [
+      { id: `n_mic_${suffix}`, deviceId: mic, spaceId },
+      { id: `n_mixer_${suffix}`, deviceId: mixer, spaceId },
+      { id: `n_speaker_${suffix}`, deviceId: speaker, spaceId },
+      { id: `n_pc_${suffix}`, deviceId: pc, spaceId },
+      {
+        id: `n_join_${suffix}`,
+        modelId: "m_meet",
+        hostNodeId: `n_pc_${suffix}`,
+        spaceId: "sp_mtg",
+      },
+    ],
+    links: [
+      { id: `l${suffix}1`, from: [`n_mic_${suffix}`, "out"], to: [`n_mixer_${suffix}`, "ch1"] },
+      {
+        id: `l${suffix}2`,
+        from: [`n_mixer_${suffix}`, "usb_send"],
+        to: [`n_pc_${suffix}`, "usb_in"],
+      },
+      { id: `l${suffix}3`, from: [`n_pc_${suffix}`, "usb_in"], to: [`n_join_${suffix}`, "mic_in"] },
+      {
+        id: `l${suffix}4`,
+        from: [`n_join_${suffix}`, "spk_out"],
+        to: [`n_pc_${suffix}`, "usb_out"],
+      },
+      {
+        id: `l${suffix}5`,
+        from: [`n_pc_${suffix}`, "usb_out"],
+        to: [`n_mixer_${suffix}`, "usb_in"],
+      },
+      {
+        id: `l${suffix}6`,
+        from: [`n_mixer_${suffix}`, "main_out"],
+        to: [`n_speaker_${suffix}`, "in"],
+      },
+    ],
+    routing: [
+      { nodeId: `n_mixer_${suffix}`, inPort: "ch1", bus: "usb" },
+      { nodeId: `n_mixer_${suffix}`, inPort: "usb_in", bus: "main" },
+    ],
+  });
+
+  const a = room("a", "sp_hall", "d_mic1", "d_mixer", "d_speaker", "d_pc");
+  const b = room("b", "sp_satellite", "d_mic2", "d_mixer2", "d_speaker2", "d_laptop");
+
+  return {
+    schemaVersion: 1,
+    spaces: [
+      { id: "sp_hall", kind: "acoustic", label: "メインホール" },
+      { id: "sp_satellite", kind: "acoustic", label: "別室サテライト" },
+      { id: "sp_mtg", kind: "transport", label: "サテライト中継", meetingKey: "meet-sat" },
+    ],
+    nodes: [...a.nodes, ...b.nodes],
+    links: [...a.links, ...b.links] as SetupDoc["links"],
+    routing: [...a.routing, ...b.routing],
+  };
+}
+
+/**
+ * One laptop, its own built-in mic and speaker, and nothing else in the path.
+ * This is the return trip a conferencing app's own canceller removes, so it
+ * must not be reported as critical (§9.7.4).
+ */
+export function laptopOnlyMeeting(): SetupDoc {
+  return {
+    schemaVersion: 1,
+    spaces: [{ id: "sp_hall", kind: "acoustic", label: "メインホール" }],
+    nodes: [
+      { id: "n_laptop", deviceId: "d_laptop" },
+      { id: "n_laptop_mic", deviceId: "d_builtin_mic", spaceId: "sp_hall" },
+      { id: "n_laptop_spk", deviceId: "d_builtin_spk", spaceId: "sp_hall" },
+      { id: "n_join", modelId: "m_meet", hostNodeId: "n_laptop" },
+    ],
+    links: [
+      { id: "l1", from: ["n_join", "spk_out"], to: ["n_laptop", "headphone_out"] },
+      { id: "l2", from: ["n_laptop", "headphone_out"], to: ["n_laptop_spk", "in"] },
+      { id: "l3", from: ["n_laptop_mic", "out"], to: ["n_laptop", "line_in"] },
+      { id: "l4", from: ["n_laptop", "line_in"], to: ["n_join", "mic_in"] },
+    ],
+    routing: [],
+  };
+}
 
 export function testContext(overrides: Partial<LintContext> = {}): LintContext {
   return {

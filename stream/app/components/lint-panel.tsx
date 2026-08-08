@@ -23,7 +23,19 @@ const FIX_LABEL: Record<string, string> = {
   "remove-link": "この結線を削除",
 };
 
-export function LintPanel({ diagnostics }: { diagnostics: Diagnostic[] }) {
+export function LintPanel({
+  diagnostics,
+  nodeNames = {},
+}: {
+  diagnostics: Diagnostic[];
+  /**
+   * Node id → display name. A transport loop offers one `set-coupling` fix per
+   * machine it passes through, and without the name every button would read
+   * the same — which is worst on the finding where picking the right machine
+   * is the whole decision.
+   */
+  nodeNames?: Record<string, string>;
+}) {
   if (diagnostics.length === 0) {
     return (
       <div
@@ -65,6 +77,9 @@ export function LintPanel({ diagnostics }: { diagnostics: Diagnostic[] }) {
                   >
                     {FIX_LABEL[fix.kind] ?? fix.kind}
                     {fix.kind === "disable-route" ? ` (${fix.inPort} → ${fix.bus})` : null}
+                    {fix.kind === "set-coupling" && nodeNames[fix.nodeId]
+                      ? ` (${nodeNames[fix.nodeId]})`
+                      : null}
                   </button>
                 </Form>
               ))}

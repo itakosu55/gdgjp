@@ -1,5 +1,5 @@
 import type { Diagnostic, Rule } from "../diagnostics";
-import { nodeLabel, portVertexId } from "../graph";
+import { isPortWired, nodeLabel } from "../graph";
 import { CATEGORY_SPACE_COUPLING } from "../types";
 
 const UNKNOWN_REFERENCE = "unknown-reference";
@@ -27,6 +27,15 @@ export const structureRules: Rule = (graph, ctx) => {
           ruleId: UNKNOWN_REFERENCE,
           severity: "error",
           message: `型番カタログに存在しない型番を参照しています (${issue.modelId})。`,
+          nodeIds: [issue.nodeId],
+          linkIds: [],
+        });
+        break;
+      case "no-device-reference":
+        diagnostics.push({
+          ruleId: UNKNOWN_REFERENCE,
+          severity: "error",
+          message: "機材も型番も指定されていません。",
           nodeIds: [issue.nodeId],
           linkIds: [],
         });
@@ -129,6 +138,9 @@ export const structureRules: Rule = (graph, ctx) => {
 
   if (ctx.eventDeviceIds) {
     for (const resolved of graph.nodes.values()) {
+      // A software node references a model, not a unit in the ledger, so event
+      // membership is not a question that can be asked of it.
+      if (!resolved.device) continue;
       if (ctx.eventDeviceIds.has(resolved.device.id)) continue;
       diagnostics.push({
         ruleId: "device-not-in-event",
@@ -143,6 +155,9 @@ export const structureRules: Rule = (graph, ctx) => {
   for (const resolved of graph.nodes.values()) {
     const coupling = CATEGORY_SPACE_COUPLING[resolved.model.category];
     if (!coupling) continue;
+    // A join with no meeting is the ordinary case — one online speaker, far
+    // side not modelled — so it must not cost the commonest setup a warning.
+    if (!coupling.spaceRequired) continue;
     if (resolved.node.coupling === "isolated") continue;
     if (resolved.node.spaceId) continue;
     diagnostics.push({
@@ -176,14 +191,9 @@ export const structureRules: Rule = (graph, ctx) => {
 
   for (const resolved of graph.nodes.values()) {
     if (!ENDPOINT_CATEGORIES.has(resolved.model.category)) continue;
-    const unconnected = resolved.model.ports.filter((port) => {
-      const vertexId = portVertexId(resolved.id, port.key);
-      const edges =
-        port.direction === "out"
-          ? (graph.outgoing.get(vertexId) ?? [])
-          : (graph.incoming.get(vertexId) ?? []);
-      return !edges.some((edge) => edge.kind === "cable" || edge.kind === "host");
-    });
+    const unconnected = resolved.model.ports.filter(
+      (port) => !isPortWired(graph, resolved.id, port),
+    );
     if (unconnected.length === 0) continue;
     diagnostics.push({
       ruleId: "dangling-port",

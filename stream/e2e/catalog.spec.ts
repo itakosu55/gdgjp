@@ -56,3 +56,14 @@ test("a model can be created and given a bus, a port and a default route", async
   await cell.click();
   await expect(page.getByRole("button", { name: "CH1 → MAIN" })).toHaveText("✓");
 });
+
+test("a conferencing app carries the ports a screen share needs", async ({ page }) => {
+  await page.goto("/models");
+  await page.getByRole("link", { name: /Google Meet/ }).click();
+
+  // `mic_in` / `spk_out` alone cannot express a presenter sharing a video from
+  // their own laptop, which is the case that closes a loop AEC cannot remove.
+  for (const key of ["mic_in", "spk_out", "share_audio_in", "share_video_in"]) {
+    await expect(page.getByRole("cell", { name: key, exact: true })).toBeVisible();
+  }
+});

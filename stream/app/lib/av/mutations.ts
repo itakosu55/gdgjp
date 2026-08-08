@@ -13,7 +13,15 @@ export type SetupOperation =
   | { kind: "add-space"; space: Space }
   | { kind: "remove-space"; spaceId: string }
   | { kind: "add-node"; node: SetupNode; routes: SetupRoute[] }
-  | { kind: "update-node"; nodeId: string; patch: Partial<Omit<SetupNode, "id">> }
+  // Repointing a node at different gear is not an edit anyone makes, and while
+  // `deviceId` was mandatory it was structurally impossible. Now that both
+  // references are optional, excluding them here is what stops `clean` from
+  // producing a node that names neither.
+  | {
+      kind: "update-node";
+      nodeId: string;
+      patch: Partial<Omit<SetupNode, "id" | "deviceId" | "modelId">>;
+    }
   | { kind: "remove-node"; nodeId: string }
   | { kind: "add-link"; link: SetupLink }
   | { kind: "remove-link"; linkId: string }
@@ -157,7 +165,9 @@ function omit<T extends object, K extends keyof T>(value: T, key: K): Omit<T, K>
 
 /** Drops keys an update set to undefined so the document stays free of nulls. */
 function clean(node: SetupNode): SetupNode {
-  const result: SetupNode = { id: node.id, deviceId: node.deviceId };
+  const result: SetupNode = { id: node.id };
+  if (node.deviceId) result.deviceId = node.deviceId;
+  if (node.modelId) result.modelId = node.modelId;
   if (node.label) result.label = node.label;
   if (node.spaceId) result.spaceId = node.spaceId;
   if (node.coupling) result.coupling = node.coupling;

@@ -28,6 +28,7 @@ const MODELS = {
   pc: "mdl_seed_pc",
   obs: "mdl_seed_obs",
   meet: "mdl_seed_meet",
+  builtinMic: "mdl_seed_builtin_mic",
 } as const;
 
 export const DEVICES = [
@@ -35,9 +36,16 @@ export const DEVICES = [
   { id: "e2e_dev_mixer", modelId: MODELS.mixer, name: "E2E ミキサー" },
   { id: "e2e_dev_speaker", modelId: MODELS.speaker, name: "E2E 会場スピーカー" },
   { id: "e2e_dev_pc", modelId: MODELS.pc, name: "E2E 配信PC" },
-  { id: "e2e_dev_obs", modelId: MODELS.obs, name: "E2E OBS" },
+  { id: "e2e_dev_laptop", modelId: MODELS.pc, name: "E2E 登壇者ノートPC" },
+  { id: "e2e_dev_builtin_mic", modelId: MODELS.builtinMic, name: "E2E 内蔵マイク" },
+  // Software nodes reference `modelId` now, so no OBS or Meet unit is needed.
+  // This one row stays so `catalog.spec.ts` still has a ledger entry whose
+  // model is software, proving an old `deviceId` reference keeps resolving.
   { id: "e2e_dev_meet", modelId: MODELS.meet, name: "E2E Meet" },
 ] as const;
+
+/** Referenced directly by a node — software is not a unit in the ledger. */
+export const SOFTWARE_MODELS = MODELS;
 
 /** Read-only gear list. linter.spec.ts depends on every device staying on it. */
 export const EVENT = {
@@ -67,7 +75,7 @@ function howlingDoc() {
       { id: "n2", deviceId: "e2e_dev_mixer" },
       { id: "n3", deviceId: "e2e_dev_speaker", spaceId: "sp1" },
       { id: "n4", deviceId: "e2e_dev_pc" },
-      { id: "n5", deviceId: "e2e_dev_obs", hostNodeId: "n4" },
+      { id: "n5", modelId: MODELS.obs, hostNodeId: "n4" },
     ],
     links: [
       { id: "l1", from: ["n1", "out"], to: ["n2", "ch1"] },
@@ -92,7 +100,7 @@ function mixMinusDoc() {
     nodes: [
       { id: "n1", deviceId: "e2e_dev_mixer" },
       { id: "n2", deviceId: "e2e_dev_pc" },
-      { id: "n3", deviceId: "e2e_dev_meet", hostNodeId: "n2" },
+      { id: "n3", modelId: MODELS.meet, hostNodeId: "n2" },
     ],
     links: [
       { id: "l1", from: ["n1", "usb_send"], to: ["n2", "usb_in"] },
@@ -112,10 +120,49 @@ function silentDoc() {
     nodes: [
       { id: "n1", deviceId: "e2e_dev_mic", spaceId: "sp1" },
       { id: "n2", deviceId: "e2e_dev_pc" },
-      { id: "n3", deviceId: "e2e_dev_obs", hostNodeId: "n2" },
+      { id: "n3", modelId: MODELS.obs, hostNodeId: "n2" },
     ],
     links: [],
     routing: [],
+  };
+}
+
+/**
+ * A presenter shares a video from their own laptop, joined to the same meeting
+ * as the streaming PC and standing in the same room. No echo canceller can
+ * remove this: the sound came back through the *other* join's speaker.
+ *
+ * The hall mic is deliberately not routed to MAIN, so plain howling cannot make
+ * this pass for the wrong reason.
+ */
+function transportEchoDoc() {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      HALL,
+      { id: "sp2", kind: "transport", label: "E2E 登壇 Meet", meetingKey: "e2e-meet" },
+    ],
+    nodes: [
+      // The mixer and both computers couple to nothing, so `spaceId` says only
+      // where they are standing — which is what the diagram frames them by.
+      { id: "n1", deviceId: "e2e_dev_mic", spaceId: "sp1" },
+      { id: "n2", deviceId: "e2e_dev_mixer", spaceId: "sp1" },
+      { id: "n3", deviceId: "e2e_dev_speaker", spaceId: "sp1" },
+      { id: "n4", deviceId: "e2e_dev_pc", spaceId: "sp1" },
+      { id: "n5", modelId: MODELS.meet, hostNodeId: "n4", spaceId: "sp2" },
+      { id: "n6", deviceId: "e2e_dev_laptop", spaceId: "sp1" },
+      { id: "n7", deviceId: "e2e_dev_builtin_mic", spaceId: "sp1" },
+      { id: "n8", modelId: MODELS.meet, hostNodeId: "n6", spaceId: "sp2" },
+    ],
+    links: [
+      { id: "l1", from: ["n1", "out"], to: ["n2", "ch1"] },
+      { id: "l2", from: ["n2", "main_out"], to: ["n3", "in"] },
+      { id: "l3", from: ["n5", "spk_out"], to: ["n4", "usb_out"] },
+      { id: "l4", from: ["n4", "usb_out"], to: ["n2", "usb_in"] },
+      { id: "l5", from: ["n7", "out"], to: ["n6", "line_in"] },
+      { id: "l6", from: ["n6", "line_in"], to: ["n8", "mic_in"] },
+    ],
+    routing: [{ nodeId: "n2", inPort: "usb_in", bus: "main" }],
   };
 }
 
@@ -137,6 +184,12 @@ export const SETUPS = [
     doc: mixMinusDoc(),
   },
   { id: "e2e_setup_silent", eventId: EVENT.id, name: "E2E 無音配信", doc: silentDoc() },
+  {
+    id: "e2e_setup_transport",
+    eventId: EVENT.id,
+    name: "E2E 伝送エコー",
+    doc: transportEchoDoc(),
+  },
   // The Mix-Minus rig with the offending matrix cell already cleared: no room,
   // no endpoint gear and nothing streaming, so it reports nothing at all.
   {

@@ -1,6 +1,6 @@
 import type { PortRef, SetupDoc, SetupLink, SetupNode, Space } from "./schema";
 import type { Device, DeviceModel, DeviceModelPort, Medium, PortDirection } from "./types";
-import { CATEGORY_SPACE_COUPLING, portMedia } from "./types";
+import { CATEGORY_SPACE_COUPLING, SPACE_MEDIA, portMedia } from "./types";
 
 /**
  * Turns a setup document plus the device catalog into a directed graph.
@@ -25,6 +25,20 @@ export function spaceVertexId(spaceId: string): VertexId {
   return `space:${spaceId}`;
 }
 
+/**
+ * A transport space gets one vertex per *sender*, not one vertex.
+ *
+ * A meeting never returns a join its own audio — that exclusion is the
+ * Mix-Minus a conference bridge performs internally — and splitting the vertex
+ * is what expresses it. The alternative, a single vertex plus a "do not leave
+ * by the join you arrived from" rule, would leak join identity into `paths.ts`,
+ * which is a generic breadth-first search that knows nothing about spaces.
+ * Here the self-edge simply never exists and the search needs no changes.
+ */
+export function transportVertexId(spaceId: string, sourceNodeId: string): VertexId {
+  return `space:${spaceId}:from:${sourceNodeId}`;
+}
+
 export type PortVertex = {
   id: VertexId;
   type: "port";
@@ -33,12 +47,16 @@ export type PortVertex = {
   port: DeviceModelPort;
 };
 
-export type SpaceVertex = {
-  id: VertexId;
-  type: "space";
-  spaceId: string;
-  kind: "acoustic" | "visual";
-};
+export type SpaceVertex =
+  | { id: VertexId; type: "space"; spaceId: string; kind: "acoustic" | "visual" }
+  | {
+      id: VertexId;
+      type: "space";
+      spaceId: string;
+      kind: "transport";
+      /** The join whose signal this vertex carries. See `transportVertexId`. */
+      sourceNodeId: string;
+    };
 
 export type Vertex = PortVertex | SpaceVertex;
 
@@ -64,6 +82,7 @@ export type GraphEdge = {
 export type ResolutionIssue =
   | { kind: "unknown-device"; nodeId: string; deviceId: string }
   | { kind: "unknown-model"; nodeId: string; modelId: string }
+  | { kind: "no-device-reference"; nodeId: string }
   | { kind: "unknown-space"; nodeId: string; spaceId: string }
   | { kind: "unknown-host"; nodeId: string; hostNodeId: string }
   | { kind: "space-kind-mismatch"; nodeId: string; spaceId: string }
@@ -78,7 +97,12 @@ export type ResolutionIssue =
 export type ResolvedNode = {
   id: string;
   node: SetupNode;
-  device: Device;
+  /**
+   * `null` when the node references a model directly. Software is not a
+   * physical unit, so it does not belong in the 機材台帳 — see the note on
+   * `SetupNode.modelId`.
+   */
+  device: Device | null;
   model: DeviceModel;
   ports: Map<string, DeviceModelPort>;
 };
@@ -99,7 +123,7 @@ export type CatalogLookup = {
   models: Map<string, DeviceModel>;
 };
 
-function sharedMedia(a: Medium[], b: Medium[]): Medium[] {
+function sharedMedia(a: readonly Medium[], b: readonly Medium[]): Medium[] {
   return a.filter((medium) => b.includes(medium));
 }
 
@@ -109,23 +133,8 @@ export function buildGraph(doc: SetupDoc, catalog: CatalogLookup): BuiltGraph {
   const nodes = new Map<string, ResolvedNode>();
 
   for (const node of doc.nodes) {
-    const device = catalog.devices.get(node.deviceId);
-    if (!device) {
-      issues.push({ kind: "unknown-device", nodeId: node.id, deviceId: node.deviceId });
-      continue;
-    }
-    const model = catalog.models.get(device.modelId);
-    if (!model) {
-      issues.push({ kind: "unknown-model", nodeId: node.id, modelId: device.modelId });
-      continue;
-    }
-    nodes.set(node.id, {
-      id: node.id,
-      node,
-      device,
-      model,
-      ports: new Map(model.ports.map((port) => [port.key, port])),
-    });
+    const resolved = resolveNode(node, catalog, issues);
+    if (resolved) nodes.set(node.id, resolved);
   }
 
   for (const resolved of nodes.values()) {
@@ -138,10 +147,28 @@ export function buildGraph(doc: SetupDoc, catalog: CatalogLookup): BuiltGraph {
     }
   }
 
+  // Which nodes actually couple to which space has to be known before the
+  // vertices exist, because a transport space has one vertex per join. Sharing
+  // one pass also keeps `space-kind-mismatch` from being reported twice.
+  const members = collectSpaceMembers(nodes, spaces, issues);
+
   const vertices = new Map<VertexId, Vertex>();
   for (const space of spaces.values()) {
-    const id = spaceVertexId(space.id);
-    vertices.set(id, { id, type: "space", spaceId: space.id, kind: space.kind });
+    if (space.kind !== "transport") {
+      const id = spaceVertexId(space.id);
+      vertices.set(id, { id, type: "space", spaceId: space.id, kind: space.kind });
+      continue;
+    }
+    for (const join of members.get(space.id) ?? []) {
+      const id = transportVertexId(space.id, join.id);
+      vertices.set(id, {
+        id,
+        type: "space",
+        spaceId: space.id,
+        kind: "transport",
+        sourceNodeId: join.id,
+      });
+    }
   }
   for (const resolved of nodes.values()) {
     for (const port of resolved.model.ports) {
@@ -153,7 +180,7 @@ export function buildGraph(doc: SetupDoc, catalog: CatalogLookup): BuiltGraph {
   const edges: GraphEdge[] = [
     ...buildLinkEdges(doc, nodes, issues),
     ...buildInternalEdges(doc, nodes, issues),
-    ...buildSpaceEdges(nodes, spaces, issues),
+    ...buildSpaceEdges(members, spaces),
   ];
 
   const outgoing = new Map<VertexId, GraphEdge[]>();
@@ -168,6 +195,51 @@ export function buildGraph(doc: SetupDoc, catalog: CatalogLookup): BuiltGraph {
   }
 
   return { doc, nodes, spaces, vertices, edges, outgoing, incoming, issues };
+}
+
+/**
+ * A node names either a unit in the ledger or, for software, a model directly.
+ * Both roads end at a `DeviceModel`; only the ledger road has a `Device`.
+ */
+function resolveNode(
+  node: SetupNode,
+  catalog: CatalogLookup,
+  issues: ResolutionIssue[],
+): ResolvedNode | null {
+  let device: Device | null = null;
+  let model: DeviceModel | undefined;
+
+  if (node.deviceId) {
+    device = catalog.devices.get(node.deviceId) ?? null;
+    if (!device) {
+      issues.push({ kind: "unknown-device", nodeId: node.id, deviceId: node.deviceId });
+      return null;
+    }
+    model = catalog.models.get(device.modelId);
+    if (!model) {
+      issues.push({ kind: "unknown-model", nodeId: node.id, modelId: device.modelId });
+      return null;
+    }
+  } else if (node.modelId) {
+    model = catalog.models.get(node.modelId);
+    if (!model) {
+      issues.push({ kind: "unknown-model", nodeId: node.id, modelId: node.modelId });
+      return null;
+    }
+  } else {
+    // The schema rejects this; a document that arrived some other way still has
+    // to leave the editor usable.
+    issues.push({ kind: "no-device-reference", nodeId: node.id });
+    return null;
+  }
+
+  return {
+    id: node.id,
+    node,
+    device,
+    model,
+    ports: new Map(model.ports.map((port) => [port.key, port])),
+  };
 }
 
 function buildLinkEdges(
@@ -322,12 +394,15 @@ function buildInternalEdges(
   return edges;
 }
 
-function buildSpaceEdges(
+/** The nodes that actually couple to each space, keyed by space id. */
+type SpaceMembers = Map<string, ResolvedNode[]>;
+
+function collectSpaceMembers(
   nodes: Map<string, ResolvedNode>,
   spaces: Map<string, Space>,
   issues: ResolutionIssue[],
-): GraphEdge[] {
-  const edges: GraphEdge[] = [];
+): SpaceMembers {
+  const members: SpaceMembers = new Map();
 
   for (const resolved of nodes.values()) {
     const coupling = CATEGORY_SPACE_COUPLING[resolved.model.category];
@@ -343,34 +418,93 @@ function buildSpaceEdges(
       continue;
     }
 
-    const medium: Medium = space.kind === "acoustic" ? "audio" : "video";
-    const wanted = coupling.direction === "from_space" ? "out" : "in";
+    const list = members.get(spaceId);
+    if (list) list.push(resolved);
+    else members.set(spaceId, [resolved]);
+  }
 
-    for (const port of resolved.model.ports) {
-      if (port.direction !== wanted) continue;
-      if (!portMedia(port.signal).includes(medium)) continue;
-      const portVertex = portVertexId(resolved.id, port.key);
-      edges.push(
-        coupling.direction === "from_space"
-          ? {
-              id: `space:${spaceId}:${resolved.id}:${port.key}`,
-              from: spaceVertexId(spaceId),
-              to: portVertex,
-              kind: "space",
-              media: [medium],
-              nodeId: resolved.id,
-              spaceId,
-            }
-          : {
+  return members;
+}
+
+function buildSpaceEdges(members: SpaceMembers, spaces: Map<string, Space>): GraphEdge[] {
+  const edges: GraphEdge[] = [];
+
+  for (const [spaceId, coupled] of members) {
+    const space = spaces.get(spaceId);
+    if (!space) continue;
+    // Air carries sound and sight carries pictures, but a meeting carries both,
+    // so the medium comes from the port narrowed by the space rather than from
+    // the space alone.
+    const spaceMedia = SPACE_MEDIA[space.kind];
+
+    for (const resolved of coupled) {
+      const coupling = CATEGORY_SPACE_COUPLING[resolved.model.category];
+      if (!coupling) continue;
+
+      for (const direction of coupling.directions) {
+        const wanted: PortDirection = direction === "from_space" ? "out" : "in";
+
+        for (const port of resolved.model.ports) {
+          if (port.direction !== wanted) continue;
+          const media = sharedMedia(portMedia(port.signal), spaceMedia);
+          if (media.length === 0) continue;
+          const portVertex = portVertexId(resolved.id, port.key);
+
+          if (space.kind !== "transport") {
+            edges.push(
+              direction === "from_space"
+                ? {
+                    id: `space:${spaceId}:${resolved.id}:${port.key}`,
+                    from: spaceVertexId(spaceId),
+                    to: portVertex,
+                    kind: "space",
+                    media,
+                    nodeId: resolved.id,
+                    spaceId,
+                  }
+                : {
+                    id: `space:${resolved.id}:${port.key}:${spaceId}`,
+                    from: portVertex,
+                    to: spaceVertexId(spaceId),
+                    kind: "space",
+                    media,
+                    nodeId: resolved.id,
+                    spaceId,
+                  },
+            );
+            continue;
+          }
+
+          if (direction === "to_space") {
+            // Into the meeting, tagged with who sent it.
+            edges.push({
               id: `space:${resolved.id}:${port.key}:${spaceId}`,
               from: portVertex,
-              to: spaceVertexId(spaceId),
+              to: transportVertexId(spaceId, resolved.id),
               kind: "space",
-              media: [medium],
+              media,
               nodeId: resolved.id,
               spaceId,
-            },
-      );
+            });
+            continue;
+          }
+
+          // Out of the meeting: everyone *else*'s send arrives here. The
+          // missing self-edge is the bridge's own Mix-Minus.
+          for (const other of coupled) {
+            if (other.id === resolved.id) continue;
+            edges.push({
+              id: `space:${spaceId}:from:${other.id}:${resolved.id}:${port.key}`,
+              from: transportVertexId(spaceId, other.id),
+              to: portVertex,
+              kind: "space",
+              media,
+              nodeId: resolved.id,
+              spaceId,
+            });
+          }
+        }
+      }
     }
   }
 
@@ -428,5 +562,23 @@ export function nodesByCategory(graph: BuiltGraph, category: string): ResolvedNo
 }
 
 export function nodeLabel(resolved: ResolvedNode): string {
-  return resolved.node.label ?? resolved.device.name;
+  // `model.name` rather than `describeDevice`, which would read "Google Google
+  // Meet" for the seeded catalog entry.
+  return resolved.node.label ?? resolved.device?.name ?? resolved.model.name;
+}
+
+/**
+ * Is a cable or a device selection attached to this port?
+ *
+ * Space hops deliberately do not count. Every join in a meeting has them on
+ * both faces, so counting them would make every join look wired both ways and
+ * the diagram's wiring-derived role would be a fixed role again.
+ */
+export function isPortWired(graph: BuiltGraph, nodeId: string, port: DeviceModelPort): boolean {
+  const vertexId = portVertexId(nodeId, port.key);
+  const edges =
+    port.direction === "out"
+      ? (graph.outgoing.get(vertexId) ?? [])
+      : (graph.incoming.get(vertexId) ?? []);
+  return edges.some((edge) => edge.kind === "cable" || edge.kind === "host");
 }

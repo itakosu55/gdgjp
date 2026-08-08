@@ -7,14 +7,21 @@ import { Input } from "~/components/ui/input";
 import { Textarea } from "~/components/ui/textarea";
 import { requireUser } from "~/lib/auth-redirect.server";
 import type { Fix } from "~/lib/av/diagnostics";
+import { describeNode } from "~/lib/av/diagnostics";
 import { buildGraph, isHostAssignment, orientHostAssignment } from "~/lib/av/graph";
-import { COUPLING_LABELS, SPACE_KIND_LABELS, entries } from "~/lib/av/labels";
+import {
+  COUPLING_LABELS,
+  SPACE_KIND_LABELS,
+  SPACE_KIND_SHORT_LABELS,
+  entries,
+} from "~/lib/av/labels";
 import { layoutGraph } from "~/lib/av/layout";
 import { lint } from "~/lib/av/lint";
 import { applyFix, applyOperation, defaultRoutesFor } from "~/lib/av/mutations";
 import { safeParseSetupDoc } from "~/lib/av/schema";
 import type { PortRef, SetupDoc } from "~/lib/av/schema";
-import type { DeviceModel } from "~/lib/av/types";
+import type { DeviceModel, SpaceKind } from "~/lib/av/types";
+import { SPACE_KINDS } from "~/lib/av/types";
 import {
   getEvent,
   getSetup,
@@ -55,7 +62,13 @@ export async function loader(args: Route.LoaderArgs) {
 
   const models = new Map(modelList.map((model) => [model.id, model]));
   const diagnostics = lint(setup.doc, { models, devices, eventDeviceIds });
-  const layout = layoutGraph(buildGraph(setup.doc, { devices, models }));
+  const graph = buildGraph(setup.doc, { devices, models });
+  const layout = layoutGraph(graph);
+  // Same naming the diagnostics use, so a fix button and the message it sits
+  // under call the same machine the same thing.
+  const nodeNames = Object.fromEntries(
+    [...graph.nodes.keys()].map((id) => [id, describeNode(graph, id)]),
+  );
 
   return {
     user: { name: user.name, email: user.email, image: user.image },
@@ -63,6 +76,7 @@ export async function loader(args: Route.LoaderArgs) {
     setup: { id: setup.id, name: setup.name, docError: setup.docError },
     doc: setup.doc,
     diagnostics,
+    nodeNames,
     layout,
     models: modelList,
     available: ledger.filter((device) => eventDeviceIds.has(device.id)),
@@ -94,7 +108,10 @@ export async function action(args: Route.ActionArgs) {
     case "add-space": {
       const label = text(form.get("label"));
       if (!label) return { error: "空間の名前は必須です。" };
-      const kind = text(form.get("kind")) === "visual" ? "visual" : "acoustic";
+      const requested = text(form.get("kind"));
+      const kind: SpaceKind = SPACE_KINDS.includes(requested as SpaceKind)
+        ? (requested as SpaceKind)
+        : "acoustic";
       return save(
         applyOperation(doc, {
           kind: "add-space",
@@ -106,6 +123,9 @@ export async function action(args: Route.ActionArgs) {
             kind,
             label,
             ...(emptyToNull(form.get("venueKey")) ? { venueKey: text(form.get("venueKey")) } : {}),
+            ...(emptyToNull(form.get("meetingKey"))
+              ? { meetingKey: text(form.get("meetingKey")) }
+              : {}),
           },
         }),
       );
@@ -117,12 +137,26 @@ export async function action(args: Route.ActionArgs) {
       );
 
     case "add-node": {
-      const deviceId = text(form.get("deviceId"));
-      if (!deviceId) return { error: "機材を選んでください。" };
-      const devices = await loadDevices(env.DB);
-      const device = devices.get(deviceId);
-      if (!device) return { error: "機材が見つかりません。" };
-      const model = (await listModels(env.DB)).find((entry) => entry.id === device.modelId);
+      // One select, two option groups. `d:` is a unit from the ledger, `m:` is
+      // a model referenced directly — software has no physical unit (§9.6).
+      const choice = text(form.get("deviceId"));
+      if (!choice) return { error: "機材を選んでください。" };
+      const models = await listModels(env.DB);
+
+      let reference: { deviceId: string } | { modelId: string };
+      let model: DeviceModel | undefined;
+      if (choice.startsWith("m:")) {
+        const modelId = choice.slice(2);
+        model = models.find((entry) => entry.id === modelId);
+        if (!model) return { error: "型番が見つかりません。" };
+        reference = { modelId };
+      } else {
+        const deviceId = choice.startsWith("d:") ? choice.slice(2) : choice;
+        const device = (await loadDevices(env.DB)).get(deviceId);
+        if (!device) return { error: "機材が見つかりません。" };
+        model = models.find((entry) => entry.id === device.modelId);
+        reference = { deviceId };
+      }
 
       const nodeId = newDocId(
         "n",
@@ -132,7 +166,7 @@ export async function action(args: Route.ActionArgs) {
       return save(
         applyOperation(doc, {
           kind: "add-node",
-          node: { id: nodeId, deviceId, ...(hostNodeId ? { hostNodeId } : {}) },
+          node: { id: nodeId, ...reference, ...(hostNodeId ? { hostNodeId } : {}) },
           routes: model ? defaultRoutesFor(nodeId, model) : [],
         }),
       );
@@ -193,8 +227,9 @@ export async function action(args: Route.ActionArgs) {
       const [devices, models] = await Promise.all([loadDevices(env.DB), listModels(env.DB)]);
       const directionOf = (ref: PortRef) => {
         const node = doc.nodes.find((entry) => entry.id === ref[0]);
-        const device = node ? devices.get(node.deviceId) : undefined;
-        const model = device ? models.find((entry) => entry.id === device.modelId) : undefined;
+        if (!node) return undefined;
+        const modelId = node.deviceId ? devices.get(node.deviceId)?.modelId : node.modelId;
+        const model = modelId ? models.find((entry) => entry.id === modelId) : undefined;
         return model?.ports.find((port) => port.key === ref[1])?.direction;
       };
 
@@ -289,7 +324,7 @@ const TABS = [
 ] as const;
 
 export default function SetupEditorPage({ loaderData, actionData }: Route.ComponentProps) {
-  const { doc, models, available, diagnostics, layout, event, setup } = loaderData;
+  const { doc, models, available, diagnostics, nodeNames, layout, event, setup } = loaderData;
   const [params] = useSearchParams();
   const tab = params.get("tab") ?? "devices";
 
@@ -303,16 +338,27 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
   );
 
   const nodeInfo = doc.nodes.map((node) => {
-    const device = deviceById.get(node.deviceId);
-    const model = device ? modelById.get(device.modelId) : undefined;
+    // A software node names a model directly; everything else goes through the
+    // ledger. `deviceById` holds only this event's gear, so a node pointing at
+    // kit that was not brought still has to render — as its raw id if need be.
+    const device = node.deviceId ? deviceById.get(node.deviceId) : undefined;
+    const model = device
+      ? modelById.get(device.modelId)
+      : node.modelId
+        ? modelById.get(node.modelId)
+        : undefined;
     return {
       node,
       device,
       model,
-      label: node.label ?? device?.name ?? node.deviceId,
+      label: node.label ?? device?.name ?? model?.name ?? node.deviceId ?? node.modelId ?? node.id,
     };
   });
   const computers = nodeInfo.filter((info) => info.model?.category === "computer");
+  const softwareModels = models.filter(
+    (model) =>
+      model.category === "software_broadcast" || model.category === "software_conferencing",
+  );
 
   return (
     <Page
@@ -355,7 +401,7 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
             </span>
           ) : null}
         </h2>
-        <LintPanel diagnostics={diagnostics} />
+        <LintPanel diagnostics={diagnostics} nodeNames={nodeNames} />
       </section>
 
       <nav className="mb-4 flex flex-wrap gap-1 border-b">
@@ -376,7 +422,13 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
       </nav>
 
       {tab === "devices" ? (
-        <DevicesTab doc={doc} nodeInfo={nodeInfo} available={available} computers={computers} />
+        <DevicesTab
+          doc={doc}
+          nodeInfo={nodeInfo}
+          available={available}
+          softwareModels={softwareModels}
+          computers={computers}
+        />
       ) : null}
       {tab === "links" ? <LinksTab doc={doc} nodeInfo={nodeInfo} /> : null}
       {tab === "routing" ? <RoutingTab doc={doc} nodeInfo={nodeInfo} /> : null}
@@ -393,15 +445,32 @@ type NodeInfo = {
   label: string;
 };
 
+/**
+ * The spaces worth offering as a node's 所在.
+ *
+ * A meeting is where a join is and a room is where everything else is, and the
+ * two are never the alternative to one another. Offering both made "所在" read
+ * as a free-form tag; the graph then quietly ignored the nonsense combinations
+ * (`space-kind-mismatch`) instead of the form never asking.
+ */
+function spacesFor(doc: SetupDoc, model: DeviceModel | undefined) {
+  const wantsMeeting = model?.category === "software_conferencing";
+  return doc.spaces.filter((space) =>
+    wantsMeeting ? space.kind === "transport" : space.kind !== "transport",
+  );
+}
+
 function DevicesTab({
   doc,
   nodeInfo,
   available,
+  softwareModels,
   computers,
 }: {
   doc: SetupDoc;
   nodeInfo: NodeInfo[];
   available: { id: string; name: string }[];
+  softwareModels: DeviceModel[];
   computers: NodeInfo[];
 }) {
   return (
@@ -411,7 +480,8 @@ function DevicesTab({
           <h2 className="mb-1 text-sm font-semibold">空間</h2>
           <p className="mb-3 text-xs text-muted-foreground">
             スピーカーは空間へ出力し、マイクは空間から入力します。ここを登録しないと
-            ハウリングは検出できません。
+            ハウリングは検出できません。機材の「所在」にも使われ、同じ部屋のものは 信号フロー図で 1
+            つの枠にまとまります。
           </p>
           {doc.spaces.length === 0 ? (
             <EmptyState>空間がまだありません。</EmptyState>
@@ -426,7 +496,7 @@ function DevicesTab({
                     <span className="font-mono text-xs text-muted-foreground">{space.id}</span>{" "}
                     {space.label}
                     <span className="ml-2 text-xs text-muted-foreground">
-                      {space.kind === "acoustic" ? "音響" : "視覚"}
+                      {SPACE_KIND_SHORT_LABELS[space.kind]}
                     </span>
                   </span>
                   <Form method="post">
@@ -476,7 +546,15 @@ function DevicesTab({
                         maxLength={120}
                       />
                     </Field>
-                    <Field label="空間" htmlFor={`space-${info.node.id}`}>
+                    <Field
+                      label="所在"
+                      htmlFor={`space-${info.node.id}`}
+                      hint={
+                        info.model?.category === "software_conferencing"
+                          ? "参加しているミーティング。"
+                          : "この機材が置かれている部屋。マイクとスピーカーはここで空間と結合します。"
+                      }
+                    >
                       <select
                         id={`space-${info.node.id}`}
                         name="spaceId"
@@ -484,7 +562,7 @@ function DevicesTab({
                         className={selectClassName}
                       >
                         <option value="">（割り当てなし）</option>
-                        {doc.spaces.map((space) => (
+                        {spacesFor(doc, info.model).map((space) => (
                           <option key={space.id} value={space.id}>
                             {space.label}
                           </option>
@@ -552,7 +630,7 @@ function DevicesTab({
       <div className="flex flex-col gap-6">
         <section className="rounded-lg border p-4">
           <h2 className="mb-3 text-sm font-semibold">機材を追加</h2>
-          {available.length === 0 ? (
+          {available.length === 0 && softwareModels.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               イベント側で利用可能機材を選んでください。
             </p>
@@ -561,13 +639,28 @@ function DevicesTab({
               <input type="hidden" name="intent" value="add-node" />
               <Field label="機材" htmlFor="addDevice">
                 <select id="addDevice" name="deviceId" required className={selectClassName}>
-                  {available.map((device) => (
-                    <option key={device.id} value={device.id}>
-                      {device.name}
-                    </option>
-                  ))}
+                  <optgroup label="イベントの利用可能機材">
+                    {available.map((device) => (
+                      <option key={device.id} value={`d:${device.id}`}>
+                        {device.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {/* Software comes from the catalog, not the ledger: it is not
+                      a physical unit, and two joins into one meeting are two
+                      nodes of one model. */}
+                  <optgroup label="ソフトウェア">
+                    {softwareModels.map((model) => (
+                      <option key={model.id} value={`m:${model.id}`}>
+                        {model.name}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </Field>
+              <p className="text-xs text-muted-foreground">
+                ソフトウェアを追加したら、ホスト PC を指定してください。
+              </p>
               <Button type="submit">追加</Button>
             </Form>
           )}
@@ -601,6 +694,13 @@ function DevicesTab({
               hint="将来トラックを分けたとき、同じ部屋だと判定するための任意の識別子です。"
             >
               <Input id="venueKey" name="venueKey" placeholder="hall-a" maxLength={64} />
+            </Field>
+            <Field
+              label="ミーティングキー"
+              htmlFor="meetingKey"
+              hint="伝送空間のみ。将来トラックを分けたとき、同じミーティングだと判定するための任意の識別子です。"
+            >
+              <Input id="meetingKey" name="meetingKey" placeholder="meet-abc" maxLength={64} />
             </Field>
             <Button type="submit">追加</Button>
           </Form>

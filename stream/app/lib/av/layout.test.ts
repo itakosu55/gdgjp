@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { testContext } from "./fixtures";
+import { satelliteRooms, testContext } from "./fixtures";
 import { buildGraph } from "./graph";
 import type { LayoutNode } from "./layout";
 import { layoutGraph } from "./layout";
@@ -19,6 +19,25 @@ function layoutOf(partial: Partial<SetupDoc>) {
 
 function columnOf(layout: ReturnType<typeof layoutOf>, key: string): number | undefined {
   return layout.nodes.find((node) => node.key === key)?.column;
+}
+
+function nodeOf(layout: ReturnType<typeof layoutOf>, key: string): LayoutNode | undefined {
+  return layout.nodes.find((node) => node.key === key);
+}
+
+type Rect = { x: number; y: number; width: number; height: number };
+
+function encloses(outer: Rect, inner: Rect): boolean {
+  return (
+    inner.x >= outer.x &&
+    inner.y >= outer.y &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y + inner.height <= outer.y + outer.height
+  );
+}
+
+function overlaps(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
 
 describe("layoutGraph", () => {
@@ -265,15 +284,16 @@ describe("layoutGraph", () => {
       }
     });
 
-    // Role still wins: a remote participant belongs with the mics, not inside
-    // the machine that happens to run the app.
-    it("leaves a conferencing app pinned left even though it has a host", () => {
+    // A conferencing app used to be pinned left whatever machine it ran on,
+    // which put a laptop's Meet window a long way from the laptop. It is inside
+    // the machine, so it goes inside the machine; the role only tints the band.
+    it("nests a conferencing app in its host rather than pinning it left", () => {
       const layout = layoutOf({
         ...stage,
         nodes: [...stage.nodes, { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" }],
       });
-      expect(columnOf(layout, "n_meet")).toBe(0);
-      expect(columnOf(layout, "n_pc")).toBeGreaterThan(0);
+      expect(columnOf(layout, "n_meet")).toBe(columnOf(layout, "n_pc"));
+      expect(nodeOf(layout, "n_meet")?.parentKey).toBe("n_pc");
     });
 
     // A conferencing app is both, and is classified as an input on purpose.
@@ -293,10 +313,35 @@ describe("layoutGraph", () => {
         routing: [{ nodeId: "n_mixer", inPort: "usb_in", bus: "usb" }],
       });
 
-      expect(columnOf(layout, "n_meet")).toBe(0);
-      // The send back to the remote participant becomes a return path.
-      const send = layout.edges.find((edge) => edge.linkId === "l2");
-      expect(send?.back).toBe(true);
+      expect(nodeOf(layout, "n_meet")?.role).toBe("input");
+      // Both ends of the device selection are one machine, so neither of them
+      // is a return path.
+      expect(layout.edges.find((edge) => edge.linkId === "l2")?.back).toBe(false);
+      expect(layout.edges.find((edge) => edge.linkId === "l3")?.back).toBe(false);
+    });
+
+    // A join used only to send to a satellite room is a sink, not a source.
+    // Pinning it left would cut the edge feeding it and drop the entire main
+    // signal into the return lane, which makes the diagram lie.
+    it("treats a send-only join as an output", () => {
+      const layout = layoutOf({
+        nodes: [
+          { id: "n_mic", deviceId: "d_mic1" },
+          { id: "n_mixer", deviceId: "d_mixer" },
+          { id: "n_pc", deviceId: "d_pc" },
+          { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc" },
+        ],
+        links: [
+          { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+          { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+          { id: "l3", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
+        ],
+        routing: [{ nodeId: "n_mixer", inPort: "ch1", bus: "usb" }],
+      });
+
+      expect(layout.nodes.find((node) => node.key === "n_join")?.role).toBe("output");
+      expect(columnOf(layout, "n_join")).toBeGreaterThan(0);
+      expect(layout.edges.find((edge) => edge.linkId === "l3")?.back).toBe(false);
     });
 
     it("still never uses more columns than there are nodes", () => {
@@ -322,6 +367,134 @@ describe("layoutGraph", () => {
         expect(band.x).toBeGreaterThanOrEqual(previousRight);
         expect(band.x + band.width).toBeLessThanOrEqual(layout.width);
         previousRight = band.x + band.width;
+      }
+    });
+  });
+
+  // What contains what is the one thing the columns cannot say: where a thing
+  // is has nothing to do with which stage of the chain it is.
+  describe("containment", () => {
+    const machine = {
+      nodes: [
+        { id: "n_mixer", deviceId: "d_mixer" },
+        { id: "n_pc", deviceId: "d_pc" },
+        { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+        { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" },
+      ],
+      links: [
+        { id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+        { id: "l2", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_in"] },
+        { id: "l3", from: ["n_pc", "usb_in"], to: ["n_meet", "mic_in"] },
+      ],
+      routing: [],
+    } satisfies Partial<SetupDoc>;
+
+    it("draws every app inside the machine it runs on", () => {
+      const layout = layoutOf(machine);
+      const pc = nodeOf(layout, "n_pc");
+      for (const key of ["n_obs", "n_meet"]) {
+        const app = nodeOf(layout, key);
+        expect(app?.depth).toBe(1);
+        expect(pc && app && encloses(pc, app)).toBe(true);
+      }
+    });
+
+    it("keeps two apps on one machine from overlapping each other", () => {
+      const layout = layoutOf(machine);
+      const obs = nodeOf(layout, "n_obs");
+      const meet = nodeOf(layout, "n_meet");
+      expect(obs && meet && overlaps(obs, meet)).toBe(false);
+    });
+
+    // The gutter between an app's border and its machine's is the only strip of
+    // the machine nothing else is drawn in.
+    it("runs a device selection inside the machine, not around it", () => {
+      const layout = layoutOf(machine);
+      const pc = nodeOf(layout, "n_pc");
+      const selection = layout.edges.find((edge) => edge.linkId === "l2");
+      expect(selection?.back).toBe(false);
+      for (const point of selection?.points ?? []) {
+        expect(point.x).toBeGreaterThanOrEqual(pc?.x ?? 0);
+        expect(point.x).toBeLessThanOrEqual((pc?.x ?? 0) + (pc?.width ?? 0));
+      }
+    });
+
+    const hall = {
+      spaces: [HALL],
+      nodes: [
+        { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+        { id: "n_mixer", deviceId: "d_mixer", spaceId: "sp_hall" },
+        { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+        { id: "n_rec", deviceId: "d_recorder" },
+      ],
+      links: [
+        { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+        { id: "l2", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+        { id: "l3", from: ["n_mixer", "main_out"], to: ["n_rec", "in_l"] },
+      ],
+      routing: [{ nodeId: "n_mixer", inPort: "ch1", bus: "main" }],
+    } satisfies Partial<SetupDoc>;
+
+    // A mixer couples to no space, so the graph ignores its `spaceId` — but it
+    // is still standing in the hall, and that is what the frame is for.
+    it("frames a room round everything placed in it, coupled or not", () => {
+      const layout = layoutOf(hall);
+      const frame = layout.frames.find((entry) => entry.label === "メインホール");
+      expect(frame).toBeDefined();
+      for (const key of ["n_mic", "n_mixer", "n_speaker", "space:sp_hall"]) {
+        const node = nodeOf(layout, key);
+        expect(node && frame && encloses(frame, node)).toBe(true);
+      }
+    });
+
+    it("leaves a device with no place out of the frame", () => {
+      const layout = layoutOf(hall);
+      const frame = layout.frames.find((entry) => entry.label === "メインホール");
+      const recorder = nodeOf(layout, "n_rec");
+      expect(recorder?.frameKey).toBeNull();
+      expect(frame && recorder && overlaps(frame, recorder)).toBe(false);
+    });
+
+    // The reason places are laid out as lanes: a plain bounding box would
+    // swallow whatever another room happened to be laid out between.
+    it("keeps every other room's boxes out of a room's frame", () => {
+      const layout = layoutOf(satelliteRooms());
+      expect(layout.frames.length).toBe(2);
+      for (const frame of layout.frames) {
+        for (const node of layout.nodes) {
+          if (node.parentKey !== null || node.frameKey === frame.key) continue;
+          expect(overlaps(frame, node)).toBe(false);
+        }
+      }
+    });
+
+    it("draws no frame round a place holding nothing but its own air", () => {
+      const layout = layoutOf({
+        spaces: [HALL],
+        nodes: [{ id: "n_mixer", deviceId: "d_mixer" }],
+      });
+      expect(layout.frames).toEqual([]);
+    });
+
+    // `venueKey` was reserved for "these two spaces are the same room".
+    it("draws one frame for an acoustic and a visual space sharing a venue", () => {
+      const layout = layoutOf({
+        spaces: [
+          { id: "sp_hall", kind: "acoustic", label: "メインホール", venueKey: "hall" },
+          { id: "sp_hall_v", kind: "visual", label: "メインホール (視界)", venueKey: "hall" },
+        ],
+        nodes: [
+          { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+          { id: "n_camera", deviceId: "d_camera", spaceId: "sp_hall_v" },
+        ],
+      });
+
+      expect(layout.frames).toHaveLength(1);
+      const frame = layout.frames[0];
+      expect(frame?.spaceKinds).toEqual(["acoustic", "visual"]);
+      for (const key of ["n_mic", "n_camera"]) {
+        const node = nodeOf(layout, key);
+        expect(node && frame && encloses(frame, node)).toBe(true);
       }
     });
   });

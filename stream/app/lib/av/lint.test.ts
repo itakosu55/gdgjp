@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Diagnostic } from "./diagnostics";
-import { testContext } from "./fixtures";
+import { laptopOnlyMeeting, satelliteRooms, testContext, twoJoinsInOneHall } from "./fixtures";
 import { lint } from "./lint";
 import type { SetupDoc } from "./schema";
 
@@ -170,6 +170,68 @@ describe("remote participant echo", () => {
 
     expect(ruleIds(found)).toContain("remote-echo-acoustic");
     expect(ruleIds(found)).not.toContain("remote-echo-electrical");
+    // Pinned: a mixer in the return path is past what AEC can cancel, so the
+    // §9.7.4 downgrade must not reach this one.
+    expect(found.find((d) => d.ruleId === "remote-echo-acoustic")?.severity).toBe("critical");
+  });
+
+  it("downgrades the loop a laptop's own canceller removes", () => {
+    const found = lint(laptopOnlyMeeting(), testContext());
+    const echo = found.find((d) => d.ruleId === "remote-echo-acoustic");
+    expect(echo).toBeDefined();
+    expect(echo?.severity).toBe("warn");
+  });
+});
+
+describe("transport echo", () => {
+  it("reports a loop closed through a second join of the same meeting", () => {
+    const found = lint(twoJoinsInOneHall(), testContext());
+    const loop = found.find((d) => d.ruleId === "transport-echo-loop");
+
+    expect(loop).toBeDefined();
+    expect(loop?.severity).toBe("critical");
+    // The presenter's own laptop is the machine nobody wrote down, and naming
+    // it is the whole point of the rule.
+    expect(loop?.nodeIds).toContain("n_laptop_mic");
+    expect(loop?.nodeIds).toContain("n_speaker");
+    // Not oscillation in the room; §9.7.3 keeps the two apart.
+    expect(ruleIds(found)).not.toContain("acoustic-feedback-loop");
+  });
+
+  it("tells the two joins apart by the machine each runs on", () => {
+    const loop = lint(twoJoinsInOneHall(), testContext()).find(
+      (d) => d.ruleId === "transport-echo-loop",
+    );
+
+    // Both joins are the same model, so an unqualified path would read
+    // "Google Meet → Google Meet" and name neither laptop — which is the one
+    // thing this rule exists to do.
+    expect(loop?.message).toContain("Google Meet (登壇者ノートPC)");
+    expect(loop?.message).toContain("Google Meet (配信PC)");
+  });
+
+  it("couples two rooms that share nothing but a meeting", () => {
+    const found = lint(satelliteRooms(), testContext());
+    const loops = found.filter((d) => d.ruleId === "transport-echo-loop");
+
+    expect(loops).toHaveLength(1);
+    expect(loops[0]?.spaceIds).toEqual(
+      expect.arrayContaining(["sp_hall", "sp_satellite", "sp_mtg"]),
+    );
+  });
+
+  it("says nothing about a meeting with a single join", () => {
+    const single = twoJoinsInOneHall();
+    const found = lint(
+      {
+        ...single,
+        nodes: single.nodes.filter((node) => node.id !== "n_join_laptop"),
+        links: single.links.filter((link) => link.id !== "l6"),
+      },
+      testContext(),
+    );
+
+    expect(ruleIds(found)).not.toContain("transport-echo-loop");
   });
 });
 

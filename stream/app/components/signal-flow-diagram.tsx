@@ -1,5 +1,13 @@
 import { useState } from "react";
-import type { Layout, LayoutBand, LayoutEdge, LayoutNode, Point } from "~/lib/av/layout";
+import { SPACE_KIND_SHORT_LABELS, SPACE_MEDIUM_LABELS } from "~/lib/av/labels";
+import type {
+  Layout,
+  LayoutBand,
+  LayoutEdge,
+  LayoutFrame,
+  LayoutNode,
+  Point,
+} from "~/lib/av/layout";
 
 /**
  * Picture of the signal flow, laid out from the document on every render.
@@ -14,6 +22,11 @@ import type { Layout, LayoutBand, LayoutEdge, LayoutNode, Point } from "~/lib/av
  * looks wrong: a return path under the picture is a routing fact, and plenty of
  * correct wiring produces one — the room feeding a mic, the send back to a
  * remote participant. Colouring those red trains people to ignore red.
+ *
+ * Three things are stacked behind the cables, and they say different things on
+ * purpose: a **band** is a tint with no border and means a role, a **frame** is
+ * a border and means a place, and a **box inside a box** means the machine runs
+ * the app. Only the last two are containment, so only they get an outline.
  */
 
 /** Solid = cable, dotted = inside a computer, dashed = through the room. */
@@ -40,6 +53,18 @@ export function SignalFlowDiagram({
   const [focus, setFocus] = useState<string | null>(null);
   const alerted = layout.edges.filter((edge) => isAlerted(edge, alerts));
   const quiet = layout.edges.filter((edge) => !isAlerted(edge, alerts));
+
+  // Boxes and cables interleave by depth rather than going down in two slabs.
+  // A cable ending on an app has to cross the machine holding it, so painting
+  // every cable first let the machine's fill swallow its last centimetre,
+  // arrowhead included, and the line looked like it stopped at the machine's
+  // edge. Each level therefore goes: the cables that reach that deep, then the
+  // boxes at that depth. The layout keeps every other line clear of the boxes,
+  // so lifting the deep ones over the machines uncovers nothing else.
+  const depthOf = new Map(layout.nodes.map((node) => [node.key, node.depth]));
+  const reach = (edge: LayoutEdge) =>
+    Math.max(depthOf.get(edge.from) ?? 0, depthOf.get(edge.to) ?? 0);
+  const levels = [...new Set(layout.nodes.map((node) => node.depth))].sort((a, b) => a - b);
 
   if (layout.nodes.length === 0) {
     return (
@@ -88,17 +113,28 @@ export function SignalFlowDiagram({
           <Band key={`${band.role}-${band.fromColumn}`} band={band} height={layout.height} />
         ))}
 
-        {quiet.map((edge) => (
-          <Cable key={edge.id} edge={edge} dimmed={isDimmed(edge, focus)} alerted={false} />
+        {layout.frames.map((frame) => (
+          <Frame key={frame.key} frame={frame} />
         ))}
 
-        {layout.nodes.map((node) => (
-          <Box
-            key={node.key}
-            node={node}
-            onFocus={() => setFocus(node.key)}
-            onBlur={() => setFocus(null)}
-          />
+        {levels.map((level) => (
+          <g key={level}>
+            {quiet
+              .filter((edge) => reach(edge) === level)
+              .map((edge) => (
+                <Cable key={edge.id} edge={edge} dimmed={isDimmed(edge, focus)} alerted={false} />
+              ))}
+            {layout.nodes
+              .filter((node) => node.depth === level)
+              .map((node) => (
+                <Box
+                  key={node.key}
+                  node={node}
+                  onFocus={() => setFocus(node.key)}
+                  onBlur={() => setFocus(null)}
+                />
+              ))}
+          </g>
         ))}
 
         {/* Last, so what the linter reported is never buried under a halo or a box. */}
@@ -107,6 +143,36 @@ export function SignalFlowDiagram({
         ))}
       </svg>
     </div>
+  );
+}
+
+/**
+ * The border round a place. This is the one shape in the diagram that means
+ * "these things are in here", which is why nothing else gets one.
+ */
+function Frame({ frame }: Readonly<{ frame: LayoutFrame }>) {
+  return (
+    <g data-frame-key={frame.key}>
+      <rect
+        x={frame.x}
+        y={frame.y}
+        width={frame.width}
+        height={frame.height}
+        rx={12}
+        className="fill-muted-foreground/[0.04] stroke-muted-foreground/45"
+        strokeWidth={1.5}
+      />
+      <text
+        x={frame.x + 12}
+        y={frame.y + 15}
+        className="fill-muted-foreground text-[10px] font-medium"
+      >
+        {frame.label}
+        <tspan className="fill-muted-foreground/60">
+          {`　${frame.spaceKinds.map((kind) => SPACE_KIND_SHORT_LABELS[kind]).join("・")}`}
+        </tspan>
+      </text>
+    </g>
   );
 }
 
@@ -192,9 +258,13 @@ function Box({
   onBlur: () => void;
 }) {
   const isSpace = node.spaceKind !== null;
+  const nested = node.parentKey !== null;
+  // Room inside the box for however many characters its width actually holds.
+  const room = Math.floor((node.width - 20) / 6.5);
   return (
     <g
       data-node-key={node.key}
+      data-parent-key={node.parentKey ?? undefined}
       onMouseEnter={onFocus}
       onMouseLeave={onBlur}
       onFocus={onFocus}
@@ -206,18 +276,14 @@ function Box({
         width={node.width}
         height={node.height}
         rx={8}
-        className={isSpace ? "fill-muted stroke-muted-foreground/60" : "fill-card stroke-border"}
+        className={boxFill(isSpace, nested)}
         strokeDasharray={isSpace ? "5 4" : undefined}
       />
       <text x={node.x + 10} y={node.y + 17} className="fill-foreground text-[11px] font-medium">
-        {truncate(node.label, 22)}
+        {truncate(title(node), room)}
       </text>
       <text x={node.x + 10} y={node.y + 30} className="fill-muted-foreground text-[9px]">
-        {isSpace
-          ? node.spaceKind === "acoustic"
-            ? "音響空間"
-            : "視覚空間"
-          : (node.category ?? "")}
+        {truncate(subtitle(node), room + 4)}
       </text>
 
       {node.ports.map((port) => (
@@ -235,6 +301,34 @@ function Box({
       ))}
     </g>
   );
+}
+
+function boxFill(isSpace: boolean, nested: boolean): string {
+  if (isSpace) return "fill-muted stroke-muted-foreground/60";
+  // A shade apart from the machine it sits in, or the two borders read as one
+  // box with a line through it.
+  return nested ? "fill-muted/60 stroke-border" : "fill-card stroke-border";
+}
+
+/**
+ * A space drawn inside the frame of its own room must not repeat the room's
+ * name — the frame already carries it, and two "メインホール" a centimetre apart
+ * read as two rooms. What is left to say is which medium the box carries.
+ */
+function title(node: LayoutNode): string {
+  return node.spaceKind !== null && node.frameKey !== null
+    ? SPACE_MEDIUM_LABELS[node.spaceKind]
+    : node.label;
+}
+
+/**
+ * A join's meeting beats its category: "登壇 Meet" is what tells two otherwise
+ * identical Meet windows apart, and which meeting a join is in is exactly the
+ * question §9 added the transport space to answer.
+ */
+function subtitle(node: LayoutNode): string {
+  if (node.spaceKind !== null) return SPACE_KIND_SHORT_LABELS[node.spaceKind];
+  return node.meetingLabel ?? node.category ?? "";
 }
 
 /** Polyline with its corners cut, so a route reads as one cable and not as steps. */

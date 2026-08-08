@@ -41,9 +41,17 @@ OBS extension and the CLI will consume JSON over the API, not this source.
 
 ### Three things carry the whole design
 
-1. **Spaces are graph vertices.** `graph.ts` emits implicit edges `speaker → acoustic space → mic`
-   and `display → visual space → camera`. Howling, remote echo and the infinite mirror are then
-   all one cycle search. Deleting the space vertex silently disables most of the linter.
+1. **Spaces are graph vertices.** `graph.ts` emits implicit edges `speaker → acoustic space → mic`,
+   `display → visual space → camera`, and `join → transport space → every *other* join`. Howling,
+   remote echo, the infinite mirror and a presenter's laptop feeding the room back through a second
+   join of the same meeting are then all one cycle search. Deleting the space vertex silently
+   disables most of the linter.
+
+   A transport space is a meeting (Meet, VDO.Ninja) and is the one kind that excludes itself: it
+   gets **one vertex per sending join**, `space:<id>:from:<nodeId>`, so the self-edge simply never
+   exists. That absent edge is the Mix-Minus a conference bridge performs internally. Doing it
+   with vertices rather than a search-time rule is what keeps `paths.ts` a generic BFS that knows
+   nothing about join identity — do not move the exclusion into the search.
 2. **Device internals are a boolean matrix, never levels.** `internalRouting` picks how signal
    crosses a device: `matrix` (the setup's `routing` array), `passthrough` (every input to every
    same-medium output — DI boxes, 会場常設 PA), `none` (endpoints, and conferencing apps, which
@@ -73,8 +81,22 @@ OBS extension and the CLI will consume JSON over the API, not this source.
 ### Known simplifications
 
 Phantom power is checked one hop only (the port the mic plugs into). Only one loop is reported
-per space and per conferencing app — they overlap heavily; fix one and re-run.
-`dangling-port` is scoped to endpoint categories so spare mixer channels stay quiet.
+per space and per conferencing app — they overlap heavily; fix one and re-run. A single loop
+routinely passes through several spaces at once (a satellite feed crosses two rooms and a
+meeting), so `loopRules` marks every space on a reported cycle as covered rather than reporting
+the same loop once per room. `dangling-port` is scoped to endpoint categories so spare mixer
+channels stay quiet.
+
+A sender vertex merges a join's `mic_in` and `share_audio_in`, so the model says a listener's
+`share_audio_out` can carry the far-end voice. It is a superset in the same direction as
+`blackbox` passthrough, and it produces no loop that `spk_out` does not already produce.
+`transport-echo-loop` searches audio only; a video loop through a meeting is the infinite-mirror
+family and is left to `visual-feedback-loop`.
+
+**Creating the transport space is opt-in.** `spaceRequired: false` on the conferencing coupling
+keeps the commonest setup — one online speaker, far side not modelled — free of a
+`space-unassigned` warning, which is deliberate. The cost is that a two-join loop is only found
+once someone has made a meeting space and assigned both joins to it.
 
 ## Data model
 
@@ -83,6 +105,13 @@ Three layers plus the event, all in `migrations/`:
 `device_models` (型番カタログ, shared) → `devices` (機材台帳 — one row per physical unit, a single
 pool shared by every signed-in user, **not** scoped to a chapter) → `event_devices` (what was
 actually brought) → `setups.doc` (the SetupDoc JSON).
+
+**Software skips the ledger.** A `SetupNode` names either a `deviceId` or a `modelId`, never both.
+Software is not a physical unit: two joins into one meeting are two nodes of one model, and a
+"Meet #2" ledger row would make the future `device-double-booked` rule fire on them. The editor
+and `/devices` only ever offer software as a model; a `deviceId` pointing at a software model
+still resolves, so no document ever had to be migrated (the app has never been deployed remotely,
+so none existed). `device-not-in-event` skips nodes with no `device`.
 
 `devices.owner_note` is a memo, never an ACL. Keeping the ledger per-unit rather than
 per-model-with-quantity is a prerequisite for the future double-booking rule; do not collapse it.
@@ -102,6 +131,10 @@ The editor keeps them in separate tables with separate forms, and the cable form
 outputs as a source and only inputs as a destination. It used to be one form whose hint had to
 say "out→out is correct between an app and its host PC" — a caveat like that is the sign of two
 relationships wearing one name. The assignment form never asks which way round the link goes.
+
+Because `orientHostAssignment` only ever produces same-face links, `routeNested` can assume both
+ends sit on the same side of the machine and route straight up the gutter. Anything else between
+an app and its host is not a device selection, and falls back to `routeSibling`.
 
 The long-term fix is to move assignments out of `links` and onto the node
 (`assignments: { port, hostPort }[]`), so `links` means only cables and the AI phase never has to
@@ -182,23 +215,52 @@ The role constraint is also what makes the layout *fair*: with pure longest path
 cut to break a loop depended on the order the search visited nodes, so two identical mics could
 land in different columns. Cutting by rule instead of by search order puts them together.
 
-A software node sits in **the same column as the computer it runs on** (`pinToHosts`), and the
-row order and y assignment both put it directly under its host. An app is inside the machine, not
-another stage of the chain — ranking OBS by where the signal reaches put it out among the
-speakers. Role still wins over the host pin, which is what keeps a conferencing app on the left.
-The host link then runs inside the column and `routeSibling` draws it as a short connector down
-the side, not as a return path.
+### Containment
+
+Two things contain other things, and neither is a column, because where a thing *is* has nothing
+to do with which stage of the chain it is.
+
+**A computer contains its apps.** A software node is drawn *inside* its host's box: `nestBoxes`
+folds the children's heights into the machine before anything is ranked, and the child never
+enters the column stages at all. `projectToRoots` then re-points every edge at the machine, so
+the machine is the unit that gets ranked. This replaced three special cases that used to chase an
+app around after ranking had scattered it (`pinToHosts`, `hostsFirst`, and a host-pinning pass in
+`assignRows`) — do not reintroduce them. `routeNested` draws the device selection up the gutter
+between the app's border and the machine's, the one strip of the machine nothing else occupies.
+
+The cost is deliberate: a conferencing app is **no longer pinned left**. It goes where its
+machine goes, because a Meet window several columns away from the laptop running it was the thing
+being complained about. `joinRole` still derives the role (§9.7.1) and the role still tints the
+band and still decides the column for a join with no host.
+
+**A room contains what is in it.** `SetupNode.spaceId` means *where this node is*; for a category
+that couples to a space it is also what it couples to, and for a mixer or a PC the graph ignores
+it. `collectPlaces` groups spaces into places by `venueKey ?? id`, so a hall's acoustic and visual
+spaces are one room and one frame — the use `venueKey` was reserved for.
+
+A room spans the whole chain, so it cannot be a box; it is a **horizontal lane**. `separateLanes`
+shifts each place's members as a rigid body onto its own band of rows. That is not cosmetic: a
+plain bounding box round a room's members would swallow whichever box from the room next door
+happened to be laid out between them, and lanes make that impossible rather than unlikely. A
+rigid shift also cannot introduce a collision, since the alignment passes already settled the
+inside of each lane.
+
+`computeFrames` then draws the border. A place holding nothing but its own air gets no frame.
 
 Bands come from `computeBands`: a run of columns sharing a role, emitted as a tint the component
-captions 入力 / 中間 / 出力 / 空間. Deliberately a tint and not a frame around the group — position
-already carries the role, a frame implies a containment that is not there, and the border
-vocabulary is already spoken for (solid device, dashed room).
+captions 入力 / 中間 / 出力 / 空間. Deliberately a tint and **not** a frame — position already
+carries the role, and a role is not a container. The three shapes now say three different things
+and must stay distinct: tint = role, border = place, box-inside-box = machine runs the app.
 
-`software_conferencing` is classified as an **input** on purpose. It is genuinely both — a remote
-speaker arrives through it and the local mix is sent back out of it — and classifying it this way
-means the send to the remote participant becomes a return path under the diagram. That is a
-deliberate reading ("a remote participant is someone talking into the room"), not an oversight;
-Mix-Minus is still detected by `lint`, which does not care about layout.
+`software_conferencing` is the one category whose role is **derived from its wiring** rather than
+fixed (`joinRole`). Only outputs wired, or nothing wired yet, means `input` — a remote participant
+is someone talking into the room. Only inputs wired means `output`: a join used purely to send to
+a satellite room is a sink, and treating that as a source drops the whole main signal into the
+return lane.
+
+The predicate counts only `cable` and `host` edges (`isPortWired`). Every join in a meeting has
+space edges on both faces, so counting those would classify every join as "both" and the role
+would be fixed again in all but name.
 
 Two properties exist for the phases after this one, and both have tests:
 

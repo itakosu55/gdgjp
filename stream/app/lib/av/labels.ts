@@ -6,7 +6,7 @@ import type {
   PhantomRole,
   SignalKind,
 } from "./types";
-import type { BusKind } from "./types";
+import type { BusKind, SpaceKind } from "./types";
 
 /** Japanese labels for the enums, used by every form in the app. */
 
@@ -79,10 +79,31 @@ export const BUS_KIND_LABELS: Record<BusKind, string> = {
   sub: "SUB",
 };
 
-export const SPACE_KIND_LABELS = {
+export const SPACE_KIND_LABELS: Record<SpaceKind, string> = {
   acoustic: "音響空間 (スピーカー → 空気 → マイク)",
   visual: "視覚空間 (スクリーン → 視界 → カメラ)",
-} as const;
+  transport: "伝送空間 (join → ミーティング → 他の join)",
+};
+
+/** The one-word form used in lists, where the parenthetical would not fit. */
+export const SPACE_KIND_SHORT_LABELS: Record<SpaceKind, string> = {
+  acoustic: "音響",
+  visual: "視覚",
+  transport: "伝送",
+};
+
+/**
+ * What the space physically is, for the diagram.
+ *
+ * A space drawn inside the frame of the room it belongs to must not repeat the
+ * room's name — the frame already says it. What is left to say is which of the
+ * room's media this box carries.
+ */
+export const SPACE_MEDIUM_LABELS: Record<SpaceKind, string> = {
+  acoustic: "空気",
+  visual: "視界",
+  transport: "ミーティング",
+};
 
 export const COUPLING_LABELS = {
   open: "open — 空間と結合する",

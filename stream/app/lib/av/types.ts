@@ -119,15 +119,40 @@ export function isAnalogAudio(signal: SignalKind): boolean {
   return signal === "audio_analog";
 }
 
+/**
+ * The three things a signal can cross that is not a cable.
+ *
+ * `transport` is an online meeting (Meet, VDO.Ninja). Treating it as a space
+ * rather than a device is what makes a loop through two joins of the same
+ * meeting reachable by the one cycle search — a presenter's laptop sharing
+ * their screen from inside the room closes a loop AEC cannot cancel, because
+ * the sound came back through *another* join's speaker and has no reference
+ * signal. See docs/260805_stream_av_designer.md §9.
+ */
+export const SPACE_KINDS = ["acoustic", "visual", "transport"] as const;
+export type SpaceKind = (typeof SPACE_KINDS)[number];
+
+/**
+ * `from_space` — the device picks the medium up out of the space, so the space
+ * feeds its outputs (mics, cameras, and a join receiving the meeting).
+ * `to_space` — the device emits into the space, so its inputs feed the space
+ * (speakers, displays, and a join sending into the meeting).
+ */
+export type CouplingDirection = "from_space" | "to_space";
+
 export type SpaceCoupling = {
-  spaceKind: "acoustic" | "visual";
+  spaceKind: SpaceKind;
+  /** A join both sends into its meeting and receives from it, so it has two. */
+  directions: readonly CouplingDirection[];
   /**
-   * `from_space` — the device picks the medium up out of the room, so the space
-   * feeds its outputs (mics, cameras).
-   * `to_space` — the device emits into the room, so its inputs feed the space
-   * (speakers, displays and projectors).
+   * Whether leaving the space blank is worth a warning.
+   *
+   * A mic with no room makes howling undetectable, so it is. A join with no
+   * meeting is the ordinary case — one online speaker, far side not modelled —
+   * and charging the commonest setup extra data entry for nothing is exactly
+   * what §9.3 forbids.
    */
-  direction: "from_space" | "to_space";
+  spaceRequired: boolean;
 };
 
 /**
@@ -135,10 +160,26 @@ export type SpaceCoupling = {
  * Headphones and in-ear monitors are deliberately absent: they never couple.
  */
 export const CATEGORY_SPACE_COUPLING: Partial<Record<DeviceCategory, SpaceCoupling>> = {
-  mic: { spaceKind: "acoustic", direction: "from_space" },
-  speaker: { spaceKind: "acoustic", direction: "to_space" },
-  camera: { spaceKind: "visual", direction: "from_space" },
-  display: { spaceKind: "visual", direction: "to_space" },
+  mic: { spaceKind: "acoustic", directions: ["from_space"], spaceRequired: true },
+  speaker: { spaceKind: "acoustic", directions: ["to_space"], spaceRequired: true },
+  camera: { spaceKind: "visual", directions: ["from_space"], spaceRequired: true },
+  display: { spaceKind: "visual", directions: ["to_space"], spaceRequired: true },
+  software_conferencing: {
+    spaceKind: "transport",
+    directions: ["to_space", "from_space"],
+    spaceRequired: false,
+  },
+};
+
+/**
+ * What a space can carry. Air carries sound and sight carries pictures, but a
+ * meeting carries both, so the single medium the older code derived from the
+ * space kind is not enough — a port's own signal has to narrow it.
+ */
+export const SPACE_MEDIA: Record<SpaceKind, readonly Medium[]> = {
+  acoustic: ["audio"],
+  visual: ["video"],
+  transport: ["audio", "video"],
 };
 
 /** Connectors that mate without an adapter. */

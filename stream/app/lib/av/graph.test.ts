@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { testContext } from "./fixtures";
+import { testContext, twoJoinsInOneHall } from "./fixtures";
 import {
   buildGraph,
   isHostAssignment,
   orientHostAssignment,
   portVertexId,
   spaceVertexId,
+  transportVertexId,
 } from "./graph";
 import type { PortRef, SetupDoc } from "./schema";
 
@@ -242,5 +243,65 @@ describe("orienting a device selection", () => {
     expect(
       orientHostAssignment({ ref: app, direction: "in" }, { ref: host, direction: "out" }),
     ).toBeNull();
+  });
+});
+
+describe("transport spaces", () => {
+  const ctx = testContext();
+  const graph = buildGraph(twoJoinsInOneHall(), { devices: ctx.devices, models: ctx.models });
+  const fromStream = transportVertexId("sp_mtg", "n_join_stream");
+  const fromLaptop = transportVertexId("sp_mtg", "n_join_laptop");
+
+  it("splits the meeting into one vertex per sending join", () => {
+    expect(graph.vertices.get(fromStream)).toMatchObject({ type: "space", kind: "transport" });
+    expect(graph.vertices.get(fromLaptop)).toMatchObject({ type: "space", kind: "transport" });
+    // No undivided vertex: a meeting is only ever entered as somebody's send.
+    expect(graph.vertices.get(spaceVertexId("sp_mtg"))).toBeUndefined();
+  });
+
+  it("carries a join's input into its own sender vertex", () => {
+    expect(hasEdge(graph, portVertexId("n_join_laptop", "mic_in"), fromLaptop, "space")).toBe(true);
+  });
+
+  it("never returns a join its own audio", () => {
+    // The absent self-edge *is* the Mix-Minus a conference bridge performs
+    // internally. Expressing it as a missing edge is what keeps `paths.ts` a
+    // generic search with no knowledge of join identity.
+    expect(hasEdge(graph, fromLaptop, portVertexId("n_join_laptop", "spk_out"))).toBe(false);
+    expect(hasEdge(graph, fromLaptop, portVertexId("n_join_stream", "spk_out"))).toBe(true);
+  });
+
+  it("keeps audio and video on separate edges through one meeting", () => {
+    const audio = graph.edges.find(
+      (edge) => edge.from === fromLaptop && edge.to === portVertexId("n_join_stream", "spk_out"),
+    );
+    const video = graph.edges.find(
+      (edge) =>
+        edge.from === fromLaptop && edge.to === portVertexId("n_join_stream", "cam_video_out"),
+    );
+    expect(audio?.media).toEqual(["audio"]);
+    expect(video?.media).toEqual(["video"]);
+  });
+
+  it("leaves a single-join meeting a dead end", () => {
+    const single = twoJoinsInOneHall();
+    const graph = buildGraph(
+      {
+        ...single,
+        nodes: single.nodes.filter((node) => node.id !== "n_join_laptop"),
+        links: single.links.filter((link) => link.id !== "l6"),
+      },
+      { devices: ctx.devices, models: ctx.models },
+    );
+
+    // One online speaker is the commonest setup by far, and §9.3 requires it to
+    // behave exactly as it did before transport spaces existed.
+    expect(graph.outgoing.get(transportVertexId("sp_mtg", "n_join_stream")) ?? []).toEqual([]);
+  });
+
+  it("resolves a node that names a model instead of a ledger unit", () => {
+    expect(graph.nodes.get("n_join_stream")?.device).toBeNull();
+    expect(graph.nodes.get("n_join_stream")?.model.id).toBe("m_meet");
+    expect(graph.issues).toEqual([]);
   });
 });
