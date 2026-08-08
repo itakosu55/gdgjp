@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { Form, Link } from "react-router";
+import { Link } from "react-router";
 import { Field, selectClassName } from "~/components/page";
 import { RoutingMatrix, hasMatrix } from "~/components/routing-matrix";
+import { SetupForm } from "~/components/setup-form";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Textarea } from "~/components/ui/textarea";
@@ -82,7 +83,7 @@ export function SetupInspector({
         </p>
       </div>
 
-      <Form method="post" className="flex flex-col gap-3">
+      <SetupForm className="flex flex-col gap-3">
         <input type="hidden" name="intent" value="update-node" />
         <input type="hidden" name="nodeId" value={info.node.id} />
         <Field label="表示名" htmlFor={`label-${info.node.id}`}>
@@ -157,7 +158,7 @@ export function SetupInspector({
             保存
           </Button>
         </div>
-      </Form>
+      </SetupForm>
 
       {hasMatrix(info) && info.model ? (
         <section>
@@ -201,13 +202,13 @@ export function SetupInspector({
         )}
       </section>
 
-      <Form method="post">
+      <SetupForm>
         <input type="hidden" name="intent" value="remove-node" />
         <input type="hidden" name="nodeId" value={info.node.id} />
         <button type="submit" className="text-xs text-muted-foreground hover:text-destructive">
           構成から外す
         </button>
-      </Form>
+      </SetupForm>
     </div>
   );
 }
@@ -242,13 +243,13 @@ function Wire({
       <span className="shrink-0 text-muted-foreground">{portLabel(info, own[1])}</span>
       <span className="shrink-0 text-muted-foreground">{outgoing ? "→" : "←"}</span>
       <span className="min-w-0 truncate">{describePort(nodeInfo, peer)}</span>
-      <Form method="post" className="ml-auto shrink-0">
+      <SetupForm className="ml-auto shrink-0">
         <input type="hidden" name="intent" value="remove-link" />
         <input type="hidden" name="linkId" value={link.id} />
         <button type="submit" className="text-muted-foreground hover:text-destructive">
           削除
         </button>
-      </Form>
+      </SetupForm>
     </div>
   );
 }
@@ -310,13 +311,13 @@ function SpaceInspector({
                 {SPACE_KIND_SHORT_LABELS[entry.kind]}
               </span>
               <span className="min-w-0 truncate">{SPACE_KIND_LABELS[entry.kind]}</span>
-              <Form method="post" className="ml-auto shrink-0">
+              <SetupForm className="ml-auto shrink-0">
                 <input type="hidden" name="intent" value="remove-space" />
                 <input type="hidden" name="spaceId" value={entry.id} />
                 <button type="submit" className="text-muted-foreground hover:text-destructive">
                   削除
                 </button>
-              </Form>
+              </SetupForm>
             </li>
           ))}
         </ul>
@@ -363,7 +364,7 @@ function SetupSettings({ doc, setupName }: { doc: SetupDoc; setupName: string })
         <p className="text-xs text-muted-foreground">この構成そのものについての設定です。</p>
       </div>
 
-      <Form method="post" className="flex flex-col gap-3">
+      <SetupForm className="flex flex-col gap-3">
         <input type="hidden" name="intent" value="rename-setup" />
         <Field label="構成名" htmlFor="setup-name">
           <Input id="setup-name" name="name" defaultValue={setupName} maxLength={120} />
@@ -373,9 +374,9 @@ function SetupSettings({ doc, setupName }: { doc: SetupDoc; setupName: string })
             変更
           </Button>
         </div>
-      </Form>
+      </SetupForm>
 
-      <Form method="post" className="flex flex-col gap-3">
+      <SetupForm className="flex flex-col gap-3">
         <input type="hidden" name="intent" value="set-notes" />
         <Field label="メモ" htmlFor="setup-notes">
           <Textarea id="setup-notes" name="notes" rows={6} defaultValue={doc.notes ?? ""} />
@@ -385,14 +386,14 @@ function SetupSettings({ doc, setupName }: { doc: SetupDoc; setupName: string })
             保存
           </Button>
         </div>
-      </Form>
+      </SetupForm>
 
-      <Form method="post">
+      <SetupForm>
         <input type="hidden" name="intent" value="delete-setup" />
         <button type="submit" className="text-xs text-muted-foreground hover:text-destructive">
           この構成を削除
         </button>
-      </Form>
+      </SetupForm>
     </div>
   );
 }

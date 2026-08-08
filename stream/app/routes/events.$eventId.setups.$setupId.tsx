@@ -1,24 +1,21 @@
 import { ChevronDown, Menu, Minus, PanelLeft, PanelRight, Plus } from "lucide-react";
 import type { ReactNode } from "react";
-import { useRef, useState } from "react";
-import { Link, redirect, useNavigation, useSearchParams } from "react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ShouldRevalidateFunctionArgs } from "react-router";
+import { Link, redirect, useFetcher, useSearchParams } from "react-router";
 import { Header } from "~/components/header";
 import { LintPanel, SeverityChips, severityCounts } from "~/components/lint-panel";
 import { SetupInspector } from "~/components/setup-inspector";
 import { SetupTree } from "~/components/setup-tree";
 import { AddPanel, CablesView, JsonView, RoutingView } from "~/components/setup-views";
+import type { PortEnd } from "~/components/signal-flow-diagram";
 import { SignalFlowDiagram } from "~/components/signal-flow-diagram";
 import { requireUser } from "~/lib/auth-redirect.server";
-import type { Fix } from "~/lib/av/diagnostics";
 import { describeNode } from "~/lib/av/diagnostics";
-import { buildGraph, orientHostAssignment } from "~/lib/av/graph";
-import { layoutGraph } from "~/lib/av/layout";
+import { buildGraph } from "~/lib/av/graph";
+import { layoutGraph, placeKeyOf } from "~/lib/av/layout";
 import { lint } from "~/lib/av/lint";
-import { applyFix, applyOperation, defaultRoutesFor } from "~/lib/av/mutations";
-import { safeParseSetupDoc } from "~/lib/av/schema";
 import type { PortRef, SetupDoc } from "~/lib/av/schema";
-import type { DeviceModel, SpaceKind } from "~/lib/av/types";
-import { SPACE_KINDS } from "~/lib/av/types";
 import {
   getEvent,
   getSetup,
@@ -30,9 +27,10 @@ import {
   saveSetupDoc,
   softDeleteSetup,
 } from "~/lib/db";
-import { emptyToNull, text } from "~/lib/form";
-import { newDocId } from "~/lib/id";
-import { buildNodeInfo, worstSeverities } from "~/lib/setup-view";
+import { text } from "~/lib/form";
+import { applyIntent } from "~/lib/setup-intents";
+import { buildNodeInfo, collectPlaces, worstSeverities } from "~/lib/setup-view";
+import { useOptimisticDoc } from "~/lib/use-setup-doc";
 import { cn } from "~/lib/utils";
 import type { Route } from "./+types/events.$eventId.setups.$setupId";
 
@@ -51,36 +49,39 @@ export async function loader(args: Route.LoaderArgs) {
   const event = await getEvent(env.DB, setup.eventId);
   if (!event) throw new Response("Not found", { status: 404 });
 
-  const [modelList, devices, eventDeviceIds, ledger] = await Promise.all([
+  const [models, eventDeviceIds, ledger] = await Promise.all([
     listModels(env.DB),
-    // Every device, not just this event's: a node pointing at gear that was not
-    // brought must surface as `device-not-in-event`, not `unknown-reference`.
-    loadDevices(env.DB),
     listEventDeviceIds(env.DB, setup.eventId),
     listLedger(env.DB),
   ]);
-
-  const models = new Map(modelList.map((model) => [model.id, model]));
-  const diagnostics = lint(setup.doc, { models, devices, eventDeviceIds });
-  const graph = buildGraph(setup.doc, { devices, models });
-  const layout = layoutGraph(graph);
-  // Same naming the diagnostics use, so a fix button and the message it sits
-  // under call the same machine the same thing.
-  const nodeNames = Object.fromEntries(
-    [...graph.nodes.keys()].map((id) => [id, describeNode(graph, id)]),
-  );
 
   return {
     user: { name: user.name, email: user.email, image: user.image },
     event: { id: event.id, title: event.title },
     setup: { id: setup.id, name: setup.name, docError: setup.docError },
     doc: setup.doc,
-    diagnostics,
-    nodeNames,
-    layout,
-    models: modelList,
-    available: ledger.filter((device) => eventDeviceIds.has(device.id)),
+    models,
+    // Every unit, not just this event's: a node pointing at gear that was not
+    // brought must surface as `device-not-in-event`, not `unknown-reference`.
+    // In ledger order, so the "add gear" list stays grouped by category.
+    devices: ledger.map((device) => ({
+      id: device.id,
+      modelId: device.modelId,
+      name: device.name,
+    })),
+    eventDeviceIds: [...eventDeviceIds],
   };
+}
+
+/**
+ * Selecting something and switching views are query-string moves, and the
+ * document did not change — re-reading it would put a round trip in front of
+ * every click on the canvas. A fetcher submission still revalidates, which is
+ * what replaces the optimistic document with the saved one.
+ */
+export function shouldRevalidate(arg: ShouldRevalidateFunctionArgs) {
+  if (arg.formMethod) return arg.defaultShouldRevalidate;
+  return arg.currentUrl.pathname !== arg.nextUrl.pathname;
 }
 
 export async function action(args: Route.ActionArgs) {
@@ -93,227 +94,29 @@ export async function action(args: Route.ActionArgs) {
 
   const form = await args.request.formData();
   const intent = text(form.get("intent"));
-  const doc = setup.doc;
 
-  const save = async (next: SetupDoc) => {
-    await saveSetupDoc(env.DB, setup.id, next, user.id);
+  // The two that edit the row rather than the document.
+  if (intent === "rename-setup") {
+    await renameSetup(env.DB, setup.id, text(form.get("name")) || "(無題)");
     return null;
-  };
-
-  switch (intent) {
-    case "rename-setup":
-      await renameSetup(env.DB, setup.id, text(form.get("name")) || "(無題)");
-      return null;
-
-    case "add-space": {
-      const label = text(form.get("label"));
-      if (!label) return { error: "空間の名前は必須です。" };
-      const requested = text(form.get("kind"));
-      const kind: SpaceKind = SPACE_KINDS.includes(requested as SpaceKind)
-        ? (requested as SpaceKind)
-        : "acoustic";
-      return save(
-        applyOperation(doc, {
-          kind: "add-space",
-          space: {
-            id: newDocId(
-              "sp",
-              doc.spaces.map((space) => space.id),
-            ),
-            kind,
-            label,
-            ...(emptyToNull(form.get("venueKey")) ? { venueKey: text(form.get("venueKey")) } : {}),
-            ...(emptyToNull(form.get("meetingKey"))
-              ? { meetingKey: text(form.get("meetingKey")) }
-              : {}),
-          },
-        }),
-      );
-    }
-
-    case "remove-space":
-      return save(
-        applyOperation(doc, { kind: "remove-space", spaceId: text(form.get("spaceId")) }),
-      );
-
-    case "add-node": {
-      // One select, two option groups. `d:` is a unit from the ledger, `m:` is
-      // a model referenced directly — software has no physical unit (§9.6).
-      const choice = text(form.get("deviceId"));
-      if (!choice) return { error: "機材を選んでください。" };
-      const models = await listModels(env.DB);
-
-      let reference: { deviceId: string } | { modelId: string };
-      let model: DeviceModel | undefined;
-      if (choice.startsWith("m:")) {
-        const modelId = choice.slice(2);
-        model = models.find((entry) => entry.id === modelId);
-        if (!model) return { error: "型番が見つかりません。" };
-        reference = { modelId };
-      } else {
-        const deviceId = choice.startsWith("d:") ? choice.slice(2) : choice;
-        const device = (await loadDevices(env.DB)).get(deviceId);
-        if (!device) return { error: "機材が見つかりません。" };
-        model = models.find((entry) => entry.id === device.modelId);
-        reference = { deviceId };
-      }
-
-      const nodeId = newDocId(
-        "n",
-        doc.nodes.map((node) => node.id),
-      );
-      const hostNodeId = emptyToNull(form.get("hostNodeId"));
-      return save(
-        applyOperation(doc, {
-          kind: "add-node",
-          node: { id: nodeId, ...reference, ...(hostNodeId ? { hostNodeId } : {}) },
-          routes: model ? defaultRoutesFor(nodeId, model) : [],
-        }),
-      );
-    }
-
-    case "update-node": {
-      const spaceId = emptyToNull(form.get("spaceId"));
-      const coupling = text(form.get("coupling"));
-      const hostNodeId = emptyToNull(form.get("hostNodeId"));
-      return save(
-        applyOperation(doc, {
-          kind: "update-node",
-          nodeId: text(form.get("nodeId")),
-          patch: {
-            label: emptyToNull(form.get("label")) ?? undefined,
-            spaceId: spaceId ?? undefined,
-            coupling: coupling === "isolated" ? "isolated" : undefined,
-            hostNodeId: hostNodeId ?? undefined,
-          },
-        }),
-      );
-    }
-
-    case "remove-node":
-      return save(applyOperation(doc, { kind: "remove-node", nodeId: text(form.get("nodeId")) }));
-
-    case "add-link": {
-      const from = splitPortRef(form.get("from"));
-      const to = splitPortRef(form.get("to"));
-      if (!from || !to) return { error: "接続元と接続先を選んでください。" };
-      return save(
-        applyOperation(doc, {
-          kind: "add-link",
-          link: {
-            id: newDocId(
-              "l",
-              doc.links.map((link) => link.id),
-            ),
-            from,
-            to,
-          },
-        }),
-      );
-    }
-
-    // Kept apart from `add-link` on purpose: a device selection is not a cable,
-    // and its direction follows from the two ports rather than from the user.
-    case "add-assignment": {
-      const app = splitPortRef(form.get("app"));
-      const host = splitPortRef(form.get("host"));
-      if (!app || !host) return { error: "アプリ側と PC 側のポートを選んでください。" };
-
-      const appNode = doc.nodes.find((node) => node.id === app[0]);
-      if (!appNode || appNode.hostNodeId !== host[0]) {
-        return { error: "選んだ PC は、このアプリのホストではありません。" };
-      }
-
-      const [devices, models] = await Promise.all([loadDevices(env.DB), listModels(env.DB)]);
-      const directionOf = (ref: PortRef) => {
-        const node = doc.nodes.find((entry) => entry.id === ref[0]);
-        if (!node) return undefined;
-        const modelId = node.deviceId ? devices.get(node.deviceId)?.modelId : node.modelId;
-        const model = modelId ? models.find((entry) => entry.id === modelId) : undefined;
-        return model?.ports.find((port) => port.key === ref[1])?.direction;
-      };
-
-      const appDirection = directionOf(app);
-      const hostDirection = directionOf(host);
-      if (!appDirection || !hostDirection) return { error: "ポートが見つかりません。" };
-
-      const oriented = orientHostAssignment(
-        { ref: app, direction: appDirection },
-        { ref: host, direction: hostDirection },
-      );
-      if (!oriented) {
-        return {
-          error:
-            "入出力の向きが揃っていません。アプリの入力には PC の入力を、アプリの出力には PC の出力を選んでください。",
-        };
-      }
-
-      return save(
-        applyOperation(doc, {
-          kind: "add-link",
-          link: {
-            id: newDocId(
-              "l",
-              doc.links.map((link) => link.id),
-            ),
-            ...oriented,
-          },
-        }),
-      );
-    }
-
-    case "remove-link":
-      return save(applyOperation(doc, { kind: "remove-link", linkId: text(form.get("linkId")) }));
-
-    case "toggle-route":
-      return save(
-        applyOperation(doc, {
-          kind: "toggle-route",
-          nodeId: text(form.get("nodeId")),
-          inPort: text(form.get("inPort")),
-          bus: text(form.get("bus")),
-        }),
-      );
-
-    case "set-notes":
-      return save(applyOperation(doc, { kind: "set-notes", notes: text(form.get("notes")) }));
-
-    case "apply-fix": {
-      let fix: Fix;
-      try {
-        fix = JSON.parse(text(form.get("fix"))) as Fix;
-      } catch {
-        return { error: "修正内容を読み取れませんでした。" };
-      }
-      return save(applyFix(doc, fix));
-    }
-
-    case "replace-doc": {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text(form.get("doc")));
-      } catch {
-        return { error: "JSON として読み取れません。" };
-      }
-      const result = safeParseSetupDoc(parsed);
-      if (!result.success) {
-        return { error: `スキーマに適合しません: ${result.error.issues[0]?.message ?? ""}` };
-      }
-      return save(result.data);
-    }
-
-    case "delete-setup":
-      await softDeleteSetup(env.DB, setup.id);
-      return redirect(`/events/${setup.eventId}`);
-
-    default:
-      return { error: `不明な操作です: ${intent}` };
   }
-}
+  if (intent === "delete-setup") {
+    await softDeleteSetup(env.DB, setup.id);
+    return redirect(`/events/${setup.eventId}`);
+  }
 
-function splitPortRef(value: FormDataEntryValue | null): [string, string] | null {
-  const [nodeId, portKey] = text(value).split("::");
-  return nodeId && portKey ? [nodeId, portKey] : null;
+  // Everything else is the browser's own edit, replayed against the stored
+  // document — see `app/lib/setup-intents.ts` for why there is only one of it.
+  const [models, devices] = await Promise.all([listModels(env.DB), loadDevices(env.DB)]);
+  const outcome = applyIntent(setup.doc, form, {
+    models: new Map(models.map((model) => [model.id, model])),
+    devices,
+  });
+  if (outcome.kind !== "doc") {
+    return { error: outcome.kind === "error" ? outcome.error : `不明な操作です: ${intent}` };
+  }
+  await saveSetupDoc(env.DB, setup.id, outcome.doc, user.id);
+  return null;
 }
 
 /**
@@ -335,11 +138,53 @@ const VIEWS = [
 type PanelState = "auto" | "open" | "closed";
 
 export default function SetupEditorPage({ loaderData, actionData }: Route.ComponentProps) {
-  const { doc, models, available, diagnostics, nodeNames, layout, event, setup } = loaderData;
-  const [params] = useSearchParams();
+  const { models, devices, eventDeviceIds, event, setup } = loaderData;
+  const [params, setParams] = useSearchParams();
   const view = params.get("view") ?? "diagram";
   const selection = params.get("sel");
-  const navigation = useNavigation();
+
+  // The catalog the linter, the graph and every intent read. Built once from
+  // what the loader sent, because all three have to resolve a `deviceId` the
+  // same way or they describe different documents.
+  const catalog = useMemo(
+    () => ({
+      models: new Map(models.map((model) => [model.id, model])),
+      devices: new Map(devices.map((device) => [device.id, device])),
+    }),
+    [models, devices],
+  );
+
+  const { doc, busy } = useOptimisticDoc(loaderData.doc, catalog);
+  // Drag-to-wire has no form of its own to post, so it needs a fetcher it can
+  // submit to directly. Everything else on the page goes through `SetupForm`.
+  const wiring = useFetcher();
+  const wiringError = (wiring.data as { error?: string } | undefined)?.error;
+
+  const eventDevices = useMemo(() => new Set(eventDeviceIds), [eventDeviceIds]);
+  const available = useMemo(
+    () => devices.filter((device) => eventDevices.has(device.id)),
+    [devices, eventDevices],
+  );
+
+  const diagnostics = useMemo(
+    () => lint(doc, { ...catalog, eventDeviceIds: eventDevices }),
+    [doc, catalog, eventDevices],
+  );
+  const graph = useMemo(() => buildGraph(doc, catalog), [doc, catalog]);
+  // Seeded with the row order the last picture used, which is what keeps one
+  // added cable from reshuffling a column under the cursor that drew it.
+  const order = useRef<readonly string[] | undefined>(undefined);
+  const layout = useMemo(() => layoutGraph(graph, { order: order.current }), [graph]);
+  useEffect(() => {
+    order.current = layout.order;
+  }, [layout]);
+
+  // Same naming the diagnostics use, so a fix button and the message it sits
+  // under call the same machine the same thing.
+  const nodeNames = useMemo(
+    () => Object.fromEntries([...graph.nodes.keys()].map((id) => [id, describeNode(graph, id)])),
+    [graph],
+  );
 
   const [left, setLeft] = useState<PanelState>("auto");
   const [right, setRight] = useState<PanelState>("auto");
@@ -391,6 +236,82 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
     const element = surface.current;
     if (!element || layout.width === 0) return;
     setZoom(Math.max(0.4, Math.min(2, (element.clientWidth - 32) / layout.width)));
+  };
+
+  // A room is two shapes at once — the dashed box for the air in it, and the
+  // frame round everything standing in it — so selecting one has to light both.
+  const places = collectPlaces(doc);
+  const selectedKeys = new Set<string>();
+  if (selection) {
+    selectedKeys.add(selection);
+    const space = doc.spaces.find((entry) => `space:${entry.id}` === selection);
+    const placeKey = space ? placeKeyOf(space) : null;
+    if (placeKey) selectedKeys.add(placeKey);
+  }
+
+  // Selecting is two-way now, so the picture has to answer for it: picking a
+  // row in the tree or a finding in the dock is a claim about a box, and on a
+  // rig tall enough to scroll that box is usually not the one on screen.
+  // `nearest` so a box already in view is left exactly where it is.
+  useEffect(() => {
+    if (view !== "diagram" || !selection) return;
+    const box = surface.current?.querySelector(`[data-node-key="${CSS.escape(selection)}"]`);
+    box?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [view, selection]);
+
+  const selectOnCanvas = (key: string) => {
+    // A frame is a place and a place can cover several spaces (a hall's
+    // acoustic and visual one share a `venueKey`), so it lands on the same
+    // space the tree's header selects rather than on a second one.
+    const place = places.find((entry) => entry.key === key);
+    const next = new URLSearchParams(params);
+    next.set("sel", place ? `space:${place.spaceIds[0]}` : key);
+    setParams(next, { replace: true, preventScrollReset: true });
+    onSelect();
+  };
+
+  /**
+   * What dragging one jack onto another means, or `null` if it means nothing.
+   *
+   * The two relationships `links` carries look identical on the canvas and are
+   * told apart by geometry alone: across the faces is a cable, and on the same
+   * face is an app picking a device on the computer under it. That is the same
+   * rule `orientHostAssignment` applies, which is why neither the drag nor the
+   * assignment form ever asks which way round the link goes.
+   */
+  const wireFor = (from: PortEnd, to: PortEnd) => {
+    if (from.nodeId === to.nodeId) return null;
+    const a: PortRef = [from.nodeId, from.portKey];
+    const b: PortRef = [to.nodeId, to.portKey];
+
+    if (from.direction !== to.direction) {
+      // Drawn output → input however the drag was made: patching backwards
+      // from the input you are standing at is how people actually wire.
+      const [out, into] = from.direction === "out" ? [a, b] : [b, a];
+      if (hasLink(doc, out, into)) return null;
+      return { intent: "add-link", from: out, to: into } as const;
+    }
+
+    if (hasLink(doc, a, b) || hasLink(doc, b, a)) return null;
+    const hostOf = (nodeId: string) => doc.nodes.find((node) => node.id === nodeId)?.hostNodeId;
+    if (hostOf(from.nodeId) === to.nodeId) {
+      return { intent: "add-assignment", app: a, host: b } as const;
+    }
+    if (hostOf(to.nodeId) === from.nodeId) {
+      return { intent: "add-assignment", app: b, host: a } as const;
+    }
+    return null;
+  };
+
+  const onWire = (from: PortEnd, to: PortEnd) => {
+    const drawn = wireFor(from, to);
+    if (!drawn) return;
+    wiring.submit(
+      drawn.intent === "add-link"
+        ? { intent: drawn.intent, from: portValue(drawn.from), to: portValue(drawn.to) }
+        : { intent: drawn.intent, app: portValue(drawn.app), host: portValue(drawn.host) },
+      { method: "post" },
+    );
   };
 
   return (
@@ -551,6 +472,10 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
                   alerts={alerts}
                   highlight={highlight}
                   scale={zoom}
+                  selected={selectedKeys}
+                  onSelect={selectOnCanvas}
+                  canWire={(from, to) => wireFor(from, to) !== null}
+                  onWire={onWire}
                 />
               </div>
             ) : null}
@@ -646,10 +571,16 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
       </div>
 
       <div className="flex flex-none items-center gap-4 border-t bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
-        <span>{navigation.state === "idle" ? "保存済み" : "保存中…"}</span>
+        <span>{busy ? "保存中…" : "保存済み"}</span>
         {view === "diagram" ? <span>表示 {Math.round(zoom * 100)}%</span> : null}
         {setup.docError ? <span className="text-destructive">{setup.docError}</span> : null}
-        {actionData?.error ? <span className="text-destructive">{actionData.error}</span> : null}
+        {/* Every form reports its own refusal under itself (`SetupForm`). What
+            is left for here is the drag, which has no form to report under, and
+            `actionData`, which is only set when the browser posted a form
+            itself — the no-JavaScript path. */}
+        {(wiringError ?? actionData?.error) ? (
+          <span className="text-destructive">{wiringError ?? actionData?.error}</span>
+        ) : null}
         <span className="flex-1" />
         <Link
           to={hrefForView("json")}
@@ -665,6 +596,21 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
       </div>
     </div>
   );
+}
+
+function hasLink(doc: SetupDoc, from: PortRef, to: PortRef): boolean {
+  return doc.links.some(
+    (link) =>
+      link.from[0] === from[0] &&
+      link.from[1] === from[1] &&
+      link.to[0] === to[0] &&
+      link.to[1] === to[1],
+  );
+}
+
+/** The `nodeId::portKey` shape every port field on this route already posts. */
+function portValue(ref: PortRef): string {
+  return `${ref[0]}::${ref[1]}`;
 }
 
 function IconButton({

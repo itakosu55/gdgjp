@@ -24,6 +24,48 @@ export function formWith(page: Page, control: string) {
 }
 
 /**
+ * Runs an edit and waits for it to reach the server.
+ *
+ * The editor applies an edit in the browser before the round trip lands, so an
+ * assertion that it worked now passes while the POST is still in the air. Two
+ * things then break silently: navigating away aborts the write, and the next
+ * test in a serial group starts from a document that was never saved. Anything
+ * whose effect has to outlive the current page needs this.
+ */
+export async function saving(page: Page, act: () => Promise<void>): Promise<void> {
+  const posted = page.waitForResponse((response) => response.request().method() === "POST");
+  await act();
+  await posted;
+}
+
+/**
+ * A jack's grab handle. The group around it is as wide as the port's label, so
+ * clicking the centre of `[data-port-key]` would land next to the jack.
+ */
+export function jack(page: Page, nodeId: string, portKey: string) {
+  return page.locator(`[data-node-key="${nodeId}"] [data-port-key="${portKey}"] [data-port-grip]`);
+}
+
+/** Drags one jack onto another, the way someone patches on the canvas. */
+export async function dragWire(
+  page: Page,
+  from: ReturnType<typeof jack>,
+  to: ReturnType<typeof jack>,
+): Promise<void> {
+  await from.scrollIntoViewIfNeeded();
+  const start = await from.boundingBox();
+  const end = await to.boundingBox();
+  if (!start || !end) throw new Error("a jack was not on screen");
+
+  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+  await page.mouse.down();
+  // In steps, because the drop target is found by hit testing the moves rather
+  // than by the pointer entering the target element.
+  await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 12 });
+  await saving(page, () => page.mouse.up());
+}
+
+/**
  * Replaces the JSON tab's document.
  *
  * The textarea is uncontrolled, so a fill that lands before hydration gets

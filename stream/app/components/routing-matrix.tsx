@@ -1,4 +1,4 @@
-import { Form } from "react-router";
+import { SetupForm } from "~/components/setup-form";
 import type { DeviceModel } from "~/lib/av/types";
 import type { NodeInfo } from "~/lib/setup-view";
 
@@ -42,7 +42,7 @@ export function RoutingMatrix({
                 const on = enabled.has(`${info.node.id}::${port.key}::${bus.key}`);
                 return (
                   <td key={bus.key} className="px-3 py-2 text-center">
-                    <Form method="post">
+                    <SetupForm>
                       <input type="hidden" name="intent" value="toggle-route" />
                       <input type="hidden" name="nodeId" value={info.node.id} />
                       <input type="hidden" name="inPort" value={port.key} />
@@ -59,7 +59,7 @@ export function RoutingMatrix({
                       >
                         {on ? "✓" : ""}
                       </button>
-                    </Form>
+                    </SetupForm>
                   </td>
                 );
               })}

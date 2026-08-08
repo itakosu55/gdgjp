@@ -1,4 +1,5 @@
-import { useState } from "react";
+import type { RefObject } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SPACE_KIND_SHORT_LABELS, SPACE_MEDIUM_LABELS } from "~/lib/av/labels";
 import type {
   Layout,
@@ -6,16 +7,20 @@ import type {
   LayoutEdge,
   LayoutFrame,
   LayoutNode,
+  LayoutPort,
   Point,
 } from "~/lib/av/layout";
+import type { PortDirection } from "~/lib/av/types";
+import { cn } from "~/lib/utils";
 
 /**
  * Picture of the signal flow, laid out from the document on every render.
  *
- * Read-only for now — editing happens in the tables. It is drawn jack to jack
- * rather than box to box so that it can become the wiring surface later: every
- * jack and every cable carries the document id it came from, which is the hook
- * a drag would need.
+ * It is drawn jack to jack rather than box to box because a cable ends at a
+ * jack: anchors come from the model's port order and never from which links
+ * happen to exist, so drawing a new cable cannot move an anchor already on
+ * screen. That was the precondition for `onWire` below, and it is why the
+ * picture is now the wiring surface rather than a report of one.
  *
  * `alerts` holds the graph edge ids the linter reported, and is the *only*
  * thing drawn in the danger colour. The diagram does not decide on its own what
@@ -27,7 +32,25 @@ import type {
  * purpose: a **band** is a tint with no border and means a role, a **frame** is
  * a border and means a place, and a **box inside a box** means the machine runs
  * the app. Only the last two are containment, so only they get an outline.
+ *
+ * It stays geometric: it knows where every jack is and nothing about what may
+ * be plugged into what. `canWire` and `onWire` come from the route, which is
+ * the only place that knows a cable runs output → input while an app and the
+ * computer under it are wired face to face.
  */
+
+/** One end of a drag: which jack, on which box. */
+export type PortEnd = {
+  /** The box's key — for a device box, the document node id. */
+  nodeId: string;
+  portKey: string;
+  direction: PortDirection;
+};
+
+type Anchor = PortEnd & Point;
+
+/** How near a jack a drop has to land, in diagram units. Port pitch is 16. */
+const HIT_RADIUS = 18;
 
 /** Solid = cable, dotted = inside a computer, dashed = through the room. */
 const EDGE_DASH: Record<string, string | undefined> = {
@@ -38,6 +61,9 @@ const EDGE_DASH: Record<string, string | undefined> = {
 };
 
 const CORNER = 7;
+
+/** The caption strip of a place frame — the only part of it that is clickable. */
+const FRAME_GRIP = 22;
 
 const BAND_LABEL: Record<string, string> = {
   input: "入力",
@@ -51,6 +77,10 @@ export function SignalFlowDiagram({
   alerts,
   highlight = null,
   scale = 1,
+  selected,
+  onSelect,
+  canWire,
+  onWire,
 }: Readonly<{
   layout: Layout;
   alerts?: ReadonlySet<string>;
@@ -63,11 +93,41 @@ export function SignalFlowDiagram({
   highlight?: ReadonlySet<string> | null;
   /** Zoom. The picture scales; it never moves — the document has no coordinates. */
   scale?: number;
+  /**
+   * Box and frame keys drawn as selected. A set rather than one key because a
+   * room is two things at once here — the dashed box for the air in it, and the
+   * frame around everything standing in it — and selecting the room means both.
+   */
+  selected?: ReadonlySet<string>;
+  /** Called with a `LayoutNode.key` or a `LayoutFrame.key`. */
+  onSelect?: (key: string) => void;
+  /** Whether a drag from one jack to another is a link the document can hold. */
+  canWire?: (from: PortEnd, to: PortEnd) => boolean;
+  onWire?: (from: PortEnd, to: PortEnd) => void;
 }>) {
   const [focus, setFocus] = useState<string | null>(null);
   const alerted = layout.edges.filter((edge) => isAlerted(edge, alerts));
   const quiet = layout.edges.filter((edge) => !isAlerted(edge, alerts));
   const lit = litNodes(layout, highlight);
+
+  const svg = useRef<SVGSVGElement>(null);
+  const anchors = useMemo(
+    () =>
+      layout.nodes.flatMap((node) =>
+        node.ports.map(
+          (port): Anchor => ({
+            nodeId: node.key,
+            portKey: port.key,
+            direction: port.direction,
+            x: port.x,
+            y: port.y,
+          }),
+        ),
+      ),
+    [layout],
+  );
+
+  const wiring = useWiring({ svg, layout, anchors, canWire, onWire });
 
   // Boxes and cables interleave by depth rather than going down in two slabs.
   // A cable ending on an app has to cross the machine holding it, so painting
@@ -89,6 +149,7 @@ export function SignalFlowDiagram({
 
   return (
     <svg
+      ref={svg}
       role="img"
       aria-label="信号フロー図"
       viewBox={`0 0 ${layout.width} ${layout.height}`}
@@ -128,7 +189,12 @@ export function SignalFlowDiagram({
       ))}
 
       {layout.frames.map((frame) => (
-        <Frame key={frame.key} frame={frame} />
+        <Frame
+          key={frame.key}
+          frame={frame}
+          selected={selected?.has(frame.key) ?? false}
+          onSelect={onSelect ? () => onSelect(frame.key) : undefined}
+        />
       ))}
 
       {levels.map((level) => (
@@ -150,8 +216,12 @@ export function SignalFlowDiagram({
                 key={node.key}
                 node={node}
                 faded={lit !== null && !lit.has(node.key)}
+                selected={selected?.has(node.key) ?? false}
+                active={focus === node.key}
+                onSelect={onSelect ? () => onSelect(node.key) : undefined}
                 onFocus={() => setFocus(node.key)}
                 onBlur={() => setFocus(null)}
+                wiring={wiring}
               />
             ))}
         </g>
@@ -166,8 +236,165 @@ export function SignalFlowDiagram({
           alerted={true}
         />
       ))}
+
+      {wiring.from && wiring.at ? (
+        <DraftCable from={wiring.from} to={wiring.target ?? wiring.at} snapped={!!wiring.target} />
+      ) : null}
     </svg>
   );
+}
+
+/**
+ * The cable being dragged. Straight, not routed: routing is what the layout
+ * does to a cable that exists, and pretending this one already has a lane
+ * would make the picture jump the moment it becomes real.
+ */
+function DraftCable({ from, to, snapped }: Readonly<{ from: Point; to: Point; snapped: boolean }>) {
+  return (
+    <g className="pointer-events-none">
+      <path
+        d={`M${from.x},${from.y} L${to.x},${to.y}`}
+        fill="none"
+        strokeWidth={1.6}
+        strokeDasharray="4 3"
+        strokeLinecap="round"
+        className={snapped ? "stroke-primary" : "stroke-muted-foreground"}
+      />
+      {snapped ? <circle cx={to.x} cy={to.y} r={5} className="fill-primary" /> : null}
+    </g>
+  );
+}
+
+/** What the boxes need to know about a drag in progress. */
+type Wiring = {
+  /** Where the drag started, or `null` when nothing is being dragged. */
+  from: Anchor | null;
+  /** The pointer, in diagram units. */
+  at: Point | null;
+  /** The jack the drop would land on. */
+  target: Anchor | null;
+  /** Whether this jack would accept the drag currently in progress. */
+  accepts: (anchor: Anchor) => boolean;
+  start: (anchor: Anchor, event: { clientX: number; clientY: number }) => void;
+  enabled: boolean;
+};
+
+/**
+ * Dragging one jack onto another.
+ *
+ * The pointer is tracked on `window` rather than through `setPointerCapture`,
+ * because capture would send every later event to the jack the drag began on —
+ * which is exactly the element that must *not* receive them — and because it
+ * rewrites where the subsequent `click` lands, so a jack could no longer double
+ * as a way to select its device.
+ *
+ * Hit testing is arithmetic against the port anchors rather than `pointerover`
+ * on the targets, so a drop that lands a few pixels short of a 3px circle still
+ * connects, and so the target is known during the drag and can be drawn.
+ */
+function useWiring({
+  svg,
+  layout,
+  anchors,
+  canWire,
+  onWire,
+}: {
+  svg: RefObject<SVGSVGElement | null>;
+  layout: Layout;
+  anchors: Anchor[];
+  canWire?: (from: PortEnd, to: PortEnd) => boolean;
+  onWire?: (from: PortEnd, to: PortEnd) => void;
+}): Wiring {
+  const enabled = Boolean(canWire && onWire);
+  const [from, setFrom] = useState<Anchor | null>(null);
+  const [at, setAt] = useState<Point | null>(null);
+  const [target, setTarget] = useState<Anchor | null>(null);
+  // The pointerup handler is installed once per drag, so it cannot read the
+  // target out of state without reading whatever it was when the drag began.
+  const landed = useRef<Anchor | null>(null);
+
+  const toDiagram = (event: { clientX: number; clientY: number }): Point | null => {
+    const box = svg.current?.getBoundingClientRect();
+    if (!box || box.width === 0 || box.height === 0) return null;
+    return {
+      x: ((event.clientX - box.left) / box.width) * layout.width,
+      y: ((event.clientY - box.top) / box.height) * layout.height,
+    };
+  };
+
+  // `toDiagram` reads a ref and a prop that cannot change mid-drag.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above.
+  useEffect(() => {
+    if (!from || !canWire || !onWire) return;
+
+    const move = (event: PointerEvent) => {
+      const point = toDiagram(event);
+      if (!point) return;
+      setAt(point);
+      const hit = nearest(anchors, point, (anchor) => canWire(from, anchor));
+      landed.current = hit;
+      setTarget(hit);
+    };
+    const finish = () => {
+      const hit = landed.current;
+      setFrom(null);
+      setAt(null);
+      setTarget(null);
+      landed.current = null;
+      if (hit) onWire(from, hit);
+    };
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      landed.current = null;
+      setFrom(null);
+      setAt(null);
+      setTarget(null);
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    window.addEventListener("keydown", cancel);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      window.removeEventListener("keydown", cancel);
+    };
+  }, [from, anchors, canWire, onWire]);
+
+  return {
+    from,
+    at,
+    target,
+    enabled,
+    accepts: (anchor) => Boolean(from && canWire?.(from, anchor)),
+    start: (anchor, event) => {
+      if (!enabled) return;
+      setFrom(anchor);
+      setAt(toDiagram(event) ?? { x: anchor.x, y: anchor.y });
+      setTarget(null);
+      landed.current = null;
+    },
+  };
+}
+
+function nearest(
+  anchors: readonly Anchor[],
+  at: Point,
+  accept: (anchor: Anchor) => boolean,
+): Anchor | null {
+  let best: Anchor | null = null;
+  let bestDistance = HIT_RADIUS;
+  for (const anchor of anchors) {
+    if (!accept(anchor)) continue;
+    const distance = Math.hypot(anchor.x - at.x, anchor.y - at.y);
+    if (distance <= bestDistance) {
+      best = anchor;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 /**
@@ -202,22 +429,51 @@ function isFaded(edge: LayoutEdge, highlight: ReadonlySet<string> | null): boole
  * The border round a place. This is the one shape in the diagram that means
  * "these things are in here", which is why nothing else gets one.
  */
-function Frame({ frame }: Readonly<{ frame: LayoutFrame }>) {
+function Frame({
+  frame,
+  selected,
+  onSelect,
+}: Readonly<{ frame: LayoutFrame; selected: boolean; onSelect?: () => void }>) {
   return (
-    <g data-frame-key={frame.key}>
+    <g data-frame-key={frame.key} data-selected={selected ? "" : undefined}>
       <rect
         x={frame.x}
         y={frame.y}
         width={frame.width}
         height={frame.height}
         rx={12}
-        className="fill-muted-foreground/[0.04] stroke-muted-foreground/45"
-        strokeWidth={1.5}
+        className={cn(
+          "fill-muted-foreground/[0.04] stroke-muted-foreground/45",
+          selected && "stroke-primary",
+        )}
+        strokeWidth={selected ? 2 : 1.5}
       />
+      {/* Only the caption strip is clickable. The frame spans the whole rig, so
+          a hit area over its middle would swallow every click meant for the
+          gear standing inside it. */}
+      {onSelect ? (
+        <rect
+          x={frame.x}
+          y={frame.y}
+          width={frame.width}
+          height={FRAME_GRIP}
+          className="cursor-pointer fill-transparent"
+          role="button"
+          tabIndex={0}
+          aria-label={`${frame.label} を選択`}
+          onClick={onSelect}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onSelect();
+            }
+          }}
+        />
+      ) : null}
       <text
         x={frame.x + 12}
         y={frame.y + 15}
-        className="fill-muted-foreground text-[10px] font-medium"
+        className="pointer-events-none fill-muted-foreground text-[10px] font-medium"
       >
         {frame.label}
         <tspan className="fill-muted-foreground/60">
@@ -303,13 +559,22 @@ function cableStroke(edge: LayoutEdge, alerted: boolean): string {
 function Box({
   node,
   faded,
+  selected,
+  active,
+  onSelect,
   onFocus,
   onBlur,
+  wiring,
 }: {
   node: LayoutNode;
   faded: boolean;
+  selected: boolean;
+  /** Hovered or keyboard-focused, which is also what dims the other cables. */
+  active: boolean;
+  onSelect?: () => void;
   onFocus: () => void;
   onBlur: () => void;
+  wiring: Wiring;
 }) {
   const isSpace = node.spaceKind !== null;
   const nested = node.parentKey !== null;
@@ -319,7 +584,23 @@ function Box({
     <g
       data-node-key={node.key}
       data-parent-key={node.parentKey ?? undefined}
+      data-selected={selected ? "" : undefined}
       opacity={faded ? 0.35 : 1}
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      aria-label={onSelect ? selectLabel(node) : undefined}
+      aria-pressed={onSelect ? selected : undefined}
+      className={onSelect ? "cursor-pointer outline-none" : undefined}
+      onClick={onSelect}
+      onKeyDown={
+        onSelect
+          ? (event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              onSelect();
+            }
+          : undefined
+      }
       onMouseEnter={onFocus}
       onMouseLeave={onBlur}
       onFocus={onFocus}
@@ -331,29 +612,113 @@ function Box({
         width={node.width}
         height={node.height}
         rx={8}
-        className={boxFill(isSpace, nested)}
+        className={cn(
+          boxFill(isSpace, nested),
+          selected && "stroke-primary",
+          active && "stroke-ring",
+        )}
+        strokeWidth={selected ? 2 : active ? 1.5 : undefined}
         strokeDasharray={isSpace ? "5 4" : undefined}
       />
-      <text x={node.x + 10} y={node.y + 17} className="fill-foreground text-[11px] font-medium">
+      <text
+        x={node.x + 10}
+        y={node.y + 17}
+        className="pointer-events-none fill-foreground text-[11px] font-medium"
+      >
         {truncate(title(node), room)}
       </text>
-      <text x={node.x + 10} y={node.y + 30} className="fill-muted-foreground text-[9px]">
+      <text
+        x={node.x + 10}
+        y={node.y + 30}
+        className="pointer-events-none fill-muted-foreground text-[9px]"
+      >
         {truncate(subtitle(node), room + 4)}
       </text>
 
       {node.ports.map((port) => (
-        <g key={port.key} data-port-key={port.key}>
-          <circle cx={port.x} cy={port.y} r={3} className="fill-background stroke-border" />
-          <text
-            x={port.side === "left" ? port.x + 8 : port.x - 8}
-            y={port.y + 3}
-            textAnchor={port.side === "left" ? "start" : "end"}
-            className="fill-muted-foreground text-[8px]"
-          >
-            {truncate(port.label, 11)}
-          </text>
-        </g>
+        <Jack key={port.key} node={node} port={port} wiring={wiring} />
       ))}
+    </g>
+  );
+}
+
+/**
+ * A jack, and the grab handle for the cable that starts at it.
+ *
+ * The visible circle stays 3px — the drawing is dense and a bigger dot would
+ * read as a component rather than a connector — so the hit area is a separate
+ * transparent circle over it. `touch-action: none` sits on that one alone: a
+ * drag from a jack must not scroll the pane, and a drag from anywhere else
+ * must.
+ */
+function Jack({
+  node,
+  port,
+  wiring,
+}: Readonly<{ node: LayoutNode; port: LayoutPort; wiring: Wiring }>) {
+  const anchor: Anchor = {
+    nodeId: node.key,
+    portKey: port.key,
+    direction: port.direction,
+    x: port.x,
+    y: port.y,
+  };
+  const dragging = wiring.from !== null;
+  const accepts = dragging && wiring.accepts(anchor);
+  const isTarget = wiring.target?.nodeId === node.key && wiring.target?.portKey === port.key;
+  const isSource = wiring.from?.nodeId === node.key && wiring.from?.portKey === port.key;
+
+  return (
+    <g data-port-key={port.key} data-port-direction={port.direction}>
+      {/* Every jack that would take the cable currently in the air, lit at once:
+          the question during a drag is "where can this go", and answering it
+          only under the cursor means hunting for it. */}
+      {accepts ? (
+        <circle
+          cx={port.x}
+          cy={port.y}
+          r={isTarget ? 8 : 6}
+          className="pointer-events-none fill-primary/20 stroke-primary"
+        />
+      ) : null}
+      <circle
+        cx={port.x}
+        cy={port.y}
+        r={3}
+        className={cn(
+          "fill-background stroke-border",
+          isSource && "fill-primary stroke-primary",
+          dragging && !accepts && !isSource && "opacity-40",
+        )}
+      />
+      {wiring.enabled ? (
+        <circle
+          cx={port.x}
+          cy={port.y}
+          r={9}
+          fill="transparent"
+          // The grab handle, and the e2e suite's hook for a drag: the group
+          // around it is as wide as the port's label, so its centre is not
+          // the jack.
+          data-port-grip=""
+          className="cursor-crosshair touch-none"
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            wiring.start(anchor, event);
+          }}
+        >
+          <title>{port.label}</title>
+        </circle>
+      ) : null}
+      <text
+        x={port.side === "left" ? port.x + 8 : port.x - 8}
+        y={port.y + 3}
+        textAnchor={port.side === "left" ? "start" : "end"}
+        className="pointer-events-none fill-muted-foreground text-[8px]"
+      >
+        {truncate(port.label, 11)}
+      </text>
     </g>
   );
 }
@@ -363,6 +728,20 @@ function boxFill(isSpace: boolean, nested: boolean): string {
   // A shade apart from the machine it sits in, or the two borders read as one
   // box with a line through it.
   return nested ? "fill-muted/60 stroke-border" : "fill-card stroke-border";
+}
+
+/**
+ * Both shapes a room wears select the same room, so neither may be called just
+ * "メインホール を選択" — two controls with one name is a screen reader reading
+ * the picture as if it held two rooms. The frame keeps the plain name because
+ * it is the room; the dashed box says which medium it stands for, exactly as
+ * `title` does for the eye.
+ */
+function selectLabel(node: LayoutNode): string {
+  if (node.spaceKind !== null && node.frameKey !== null) {
+    return `${node.label} の${SPACE_MEDIUM_LABELS[node.spaceKind]}を選択`;
+  }
+  return `${node.label} を選択`;
 }
 
 /**

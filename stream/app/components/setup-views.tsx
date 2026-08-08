@@ -1,6 +1,6 @@
-import { Form } from "react-router";
 import { EmptyState, Field, selectClassName } from "~/components/page";
 import { RoutingMatrix, hasMatrix } from "~/components/routing-matrix";
+import { SetupForm } from "~/components/setup-form";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Textarea } from "~/components/ui/textarea";
@@ -81,7 +81,7 @@ export function CablesView({
           />
         )}
         {outputs.length > 0 && inputs.length > 0 ? (
-          <Form method="post" className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border p-3">
+          <SetupForm className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border p-3">
             <input type="hidden" name="intent" value="add-link" />
             <div className="min-w-56 flex-1">
               <Field label="接続元 (出力)" htmlFor="linkFrom">
@@ -106,7 +106,7 @@ export function CablesView({
               </Field>
             </div>
             <Button type="submit">追加</Button>
-          </Form>
+          </SetupForm>
         ) : null}
       </section>
 
@@ -130,7 +130,7 @@ export function CablesView({
           />
         )}
         {appPorts.length > 0 ? (
-          <Form method="post" className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border p-3">
+          <SetupForm className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border p-3">
             <input type="hidden" name="intent" value="add-assignment" />
             <div className="min-w-56 flex-1">
               <Field label="アプリ側のポート" htmlFor="assignApp">
@@ -163,7 +163,7 @@ export function CablesView({
               </Field>
             </div>
             <Button type="submit">割り当てを追加</Button>
-          </Form>
+          </SetupForm>
         ) : null}
       </section>
     </div>
@@ -199,7 +199,7 @@ function LinkTable({
                 <td className="px-3 py-2">{left}</td>
                 <td className="px-3 py-2">{right}</td>
                 <td className="px-3 py-2 text-right">
-                  <Form method="post">
+                  <SetupForm>
                     <input type="hidden" name="intent" value="remove-link" />
                     <input type="hidden" name="linkId" value={link.id} />
                     <button
@@ -208,7 +208,7 @@ function LinkTable({
                     >
                       削除
                     </button>
-                  </Form>
+                  </SetupForm>
                 </td>
               </tr>
             );
@@ -279,7 +279,7 @@ export function JsonView({ doc }: { doc: SetupDoc }) {
         座標を持たない自己完結の JSON です。イベント間のコピーや、将来の AI 提案の入出力が
         この形式になります。
       </p>
-      <Form method="post" className="flex flex-col gap-3">
+      <SetupForm className="flex flex-col gap-3">
         <input type="hidden" name="intent" value="replace-doc" />
         {/* Keyed on the text so an edit made elsewhere — a fix applied from the
             dock, which is now on screen at the same time — reloads the box
@@ -299,7 +299,7 @@ export function JsonView({ doc }: { doc: SetupDoc }) {
             この内容で置き換える
           </Button>
         </div>
-      </Form>
+      </SetupForm>
     </div>
   );
 }
@@ -323,7 +323,7 @@ export function AddPanel({
             イベント側で利用可能機材を選んでください。
           </p>
         ) : (
-          <Form method="post" className="flex flex-col gap-2">
+          <SetupForm className="flex flex-col gap-2">
             <input type="hidden" name="intent" value="add-node" />
             <select id="addDevice" name="deviceId" required className={selectClassName}>
               <optgroup label="イベントの利用可能機材">
@@ -350,7 +350,7 @@ export function AddPanel({
             <Button type="submit" size="sm">
               追加
             </Button>
-          </Form>
+          </SetupForm>
         )}
       </section>
 
@@ -358,7 +358,7 @@ export function AddPanel({
         <h2 className="mb-2 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
           空間を追加
         </h2>
-        <Form method="post" className="flex flex-col gap-2">
+        <SetupForm className="flex flex-col gap-2">
           <input type="hidden" name="intent" value="add-space" />
           <Field label="名前" htmlFor="spaceLabel">
             <Input
@@ -395,7 +395,7 @@ export function AddPanel({
           <Button type="submit" size="sm">
             追加
           </Button>
-        </Form>
+        </SetupForm>
       </section>
     </div>
   );

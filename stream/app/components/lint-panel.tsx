@@ -1,4 +1,5 @@
-import { Form, Link } from "react-router";
+import { Link } from "react-router";
+import { SetupForm } from "~/components/setup-form";
 import type { Diagnostic, Severity } from "~/lib/av/diagnostics";
 import { canApplyFix } from "~/lib/av/mutations";
 import { cn } from "~/lib/utils";
@@ -108,7 +109,7 @@ export function LintPanel({
               <p className="text-sm">{diagnostic.message}</p>
               <div className="mt-1.5 flex flex-wrap gap-2 empty:mt-0">
                 {(diagnostic.fixes ?? []).filter(canApplyFix).map((fix) => (
-                  <Form key={JSON.stringify(fix)} method="post">
+                  <SetupForm key={JSON.stringify(fix)}>
                     <input type="hidden" name="intent" value="apply-fix" />
                     <input type="hidden" name="fix" value={JSON.stringify(fix)} />
                     <button
@@ -121,7 +122,7 @@ export function LintPanel({
                         ? ` (${nodeNames[fix.nodeId]})`
                         : null}
                     </button>
-                  </Form>
+                  </SetupForm>
                 ))}
                 {hrefForNode
                   ? diagnostic.nodeIds

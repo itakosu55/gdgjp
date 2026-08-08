@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { diagnostic, ruleIds } from "./helpers";
+import { diagnostic, ruleIds, saving } from "./helpers";
 import { setupUrl } from "./seed-data";
 
 /**
@@ -24,10 +24,16 @@ test.describe("howling", () => {
     await page.goto(setupUrl("e2e_setup_howling_fix"));
     await expect(diagnostic(page, "acoustic-feedback-loop")).toBeVisible();
 
-    await page
-      .getByRole("button", { name: /この経路を切る/ })
-      .first()
-      .click();
+    // Through `saving`, because the assertion below reloads the page: the fix
+    // is applied in the browser and the linter re-runs there, so everything
+    // asserted here is already true while the write is still in the air — and
+    // navigating would abort it.
+    await saving(page, () =>
+      page
+        .getByRole("button", { name: /この経路を切る/ })
+        .first()
+        .click(),
+    );
 
     await expect(diagnostic(page, "acoustic-feedback-loop")).toHaveCount(0);
     // ch1 still reaches the USB bus, so the fix must not create a silent stream.
@@ -118,7 +124,9 @@ test("the diagram draws each app inside its machine and each machine in its room
   const join = page.locator('[data-node-key="n8"]');
   await expect(join).toHaveAttribute("data-parent-key", "n6");
 
-  const room = await page.locator("[data-frame-key]").first().locator("rect").boundingBox();
+  // `.first()`, because the frame's caption strip is a second, transparent
+  // rect over it — the only part of a room that is clickable.
+  const room = await page.locator("[data-frame-key]").first().locator("rect").first().boundingBox();
   const machine = await laptop.boundingBox();
   const app = await join.locator("rect").first().boundingBox();
   if (!room || !machine || !app) throw new Error("the diagram did not render");

@@ -194,6 +194,28 @@ function twoRoomsDoc() {
   };
 }
 
+/**
+ * Gear with nothing plugged into it, so the canvas is what does the plugging.
+ *
+ * Both relationships `links` carries are reachable here and look identical on
+ * screen: n1 → n2 crosses the faces and is a cable, while n4 (OBS) and the PC
+ * it runs on are wired face to face and are a device selection.
+ */
+function unwiredDoc() {
+  return {
+    schemaVersion: 1,
+    spaces: [HALL],
+    nodes: [
+      { id: "n1", deviceId: "e2e_dev_mic", spaceId: "sp1" },
+      { id: "n2", deviceId: "e2e_dev_mixer", spaceId: "sp1" },
+      { id: "n3", deviceId: "e2e_dev_pc", spaceId: "sp1" },
+      { id: "n4", modelId: MODELS.obs, hostNodeId: "n3" },
+    ],
+    links: [],
+    routing: [],
+  };
+}
+
 const EMPTY_DOC = { schemaVersion: 1, spaces: [], nodes: [], links: [], routing: [] };
 
 export const SETUPS = [
@@ -243,6 +265,11 @@ export const SETUPS = [
     name: "E2E JSON 同時表示",
     doc: howlingDoc(),
   },
+  // Mutated: cables are drawn on the canvas rather than chosen in a form.
+  { id: "e2e_setup_wiring", eventId: EVENT.id, name: "E2E 結線ドラッグ", doc: unwiredDoc() },
+  { id: "e2e_setup_assign", eventId: EVENT.id, name: "E2E 割り当てドラッグ", doc: unwiredDoc() },
+  // Mutated: a fix is applied from the dock and the page must stay where it is.
+  { id: "e2e_setup_live", eventId: EVENT.id, name: "E2E 即時反映", doc: howlingDoc() },
   // Lives on the event whose gear list event.spec.ts is allowed to change.
   {
     id: "e2e_setup_gear",

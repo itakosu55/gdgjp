@@ -1,12 +1,26 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import { diagnostic, fillSetupDoc, formWith, openAddPanel, ruleIds } from "./helpers";
+import {
+  diagnostic,
+  dragWire,
+  fillSetupDoc,
+  formWith,
+  jack,
+  openAddPanel,
+  ruleIds,
+  saving,
+} from "./helpers";
 import { setupUrl } from "./seed-data";
 
 /**
  * Builds a rig from an empty document the way someone would on the day, and
  * checks the linter reacts at each step. Serial because each step depends on
  * the one before; it has its own seeded setup so nothing else is affected.
+ *
+ * Every edit goes through `saving`, because each step here is a *precondition*
+ * of the next one. The linter now runs in the browser, so a finding appears
+ * while the write is still in the air — enough to assert on, not enough to be
+ * there when the next test loads the page.
  */
 test.describe("building a setup from scratch", () => {
   test.describe.configure({ mode: "serial" });
@@ -19,7 +33,9 @@ test.describe("building a setup from scratch", () => {
 
     await page.locator("#spaceLabel").fill("E2E メインホール");
     await page.locator("#spaceKind").selectOption("acoustic");
-    await formWith(page, "#spaceLabel").getByRole("button", { name: "追加" }).click();
+    await saving(page, () =>
+      formWith(page, "#spaceLabel").getByRole("button", { name: "追加" }).click(),
+    );
 
     // The room becomes a group in the tree, exactly as it becomes a frame in
     // the diagram.
@@ -31,7 +47,9 @@ test.describe("building a setup from scratch", () => {
     await openAddPanel(page);
 
     await page.locator("#addDevice").selectOption({ label: "E2E ハンドマイク" });
-    await formWith(page, "#addDevice").getByRole("button", { name: "追加" }).click();
+    await saving(page, () =>
+      formWith(page, "#addDevice").getByRole("button", { name: "追加" }).click(),
+    );
 
     // Without a room, howling cannot be detected at all — hence a warning.
     await expect(diagnostic(page, "space-unassigned")).toBeVisible();
@@ -43,7 +61,7 @@ test.describe("building a setup from scratch", () => {
 
     const nodeForm = formWith(page, "#space-n1");
     await nodeForm.locator("#space-n1").selectOption({ label: "E2E メインホール" });
-    await nodeForm.getByRole("button", { name: "保存" }).click();
+    await saving(page, () => nodeForm.getByRole("button", { name: "保存" }).click());
 
     await expect(diagnostic(page, "space-unassigned")).toHaveCount(0);
   });
@@ -52,16 +70,17 @@ test.describe("building a setup from scratch", () => {
     await page.goto(url);
     await openAddPanel(page);
     await page.locator("#addDevice").selectOption({ label: "E2E ミキサー" });
-    await formWith(page, "#addDevice").getByRole("button", { name: "追加" }).click();
-
-    // Wait for the second node's row, not just any text: navigating before the
-    // submission lands leaves the link form with nothing to pick.
+    await saving(page, () =>
+      formWith(page, "#addDevice").getByRole("button", { name: "追加" }).click(),
+    );
     await expect(page.locator('[data-node-id="n2"]')).toBeVisible();
 
     await page.goto(setupUrl("e2e_setup_editing", "cables"));
     await page.locator("#linkFrom").selectOption("n1::out");
     await page.locator("#linkTo").selectOption("n2::ch1");
-    await formWith(page, "#linkFrom").getByRole("button", { name: "追加" }).click();
+    await saving(page, () =>
+      formWith(page, "#linkFrom").getByRole("button", { name: "追加" }).click(),
+    );
 
     const row = page.getByRole("row").filter({ hasText: "E2E ハンドマイク" });
     await expect(row).toContainText("E2E ミキサー");
@@ -255,6 +274,95 @@ test.describe("the inspector", () => {
     await page.locator('[data-node-id="n1"]').click();
     await expect(page.locator("#host-n1")).toHaveValue("");
   });
+});
+
+/**
+ * The picture is the wiring surface now, not a report of one.
+ *
+ * Both relationships `links` carries are drawn the same way and told apart by
+ * geometry alone — across the faces is a cable, along one face is an app
+ * picking a device on the computer under it — which is the same rule
+ * `orientHostAssignment` applies, so neither the drag nor the form ever has to
+ * ask which way round the link goes.
+ */
+test.describe("wiring on the canvas", () => {
+  test("dragging an output onto an input draws a cable", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_wiring", "diagram"));
+    await page.waitForLoadState("networkidle");
+    await expect(page.locator("[data-link-id]")).toHaveCount(0);
+
+    await dragWire(page, jack(page, "n1", "out"), jack(page, "n2", "ch1"));
+
+    // The line appears in the picture, which is the thing being tested: the
+    // document was re-laid out in the browser rather than fetched back.
+    await expect(page.locator('[data-link-id="l1"]')).toBeVisible();
+    await page.goto(setupUrl("e2e_setup_wiring", "cables"));
+    const row = page.getByRole("row").filter({ hasText: "E2E ハンドマイク" });
+    await expect(row).toContainText("E2E ミキサー");
+  });
+
+  test("dragging along one face assigns the app a device on its host", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_assign", "diagram"));
+    await page.waitForLoadState("networkidle");
+
+    // Two inputs. As a cable this would be nonsense; between OBS and the PC it
+    // runs on it is which capture device OBS is listening to.
+    await dragWire(page, jack(page, "n4", "audio_in"), jack(page, "n3", "usb_in"));
+
+    await page.goto(setupUrl("e2e_setup_assign", "cables"));
+    const assignments = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "アプリの入出力割り当て", exact: true }) });
+    await expect(assignments.getByRole("row").filter({ hasText: "l1" })).toBeVisible();
+  });
+
+  test("clicking a device selects it in the inspector", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_inspector", "diagram"));
+
+    await page.locator('[data-node-key="n2"]').click();
+
+    await expect(page).toHaveURL(/sel=n2/);
+    await expect(page.locator("#space-n2")).toHaveValue("sp2");
+  });
+
+  // A room is two shapes at once — the dashed box for the air in it and the
+  // frame round everything standing in it — and both have to mean the room.
+  test("clicking a room's frame selects the room", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_inspector", "diagram"));
+
+    await page.getByRole("button", { name: "E2E ホール A を選択" }).click();
+
+    await expect(page).toHaveURL(/sel=space%3Asp1/);
+    await expect(page.getByRole("heading", { name: "E2E ホール A" })).toBeVisible();
+  });
+});
+
+/**
+ * The linter and the layout run in the browser now, so an edit changes the
+ * picture without a navigation. What that buys is everything a navigation used
+ * to throw away, and the selection is the part someone notices immediately:
+ * acting on a finding used to clear whatever was open in the inspector.
+ */
+test("applying a fix from the dock keeps the page where it was", async ({ page }) => {
+  await page.setViewportSize({ width: 1500, height: 900 });
+  await page.goto(setupUrl("e2e_setup_live", "diagram", "n2"));
+  await page.waitForLoadState("networkidle");
+  await expect(diagnostic(page, "acoustic-feedback-loop")).toBeVisible();
+
+  await page
+    .getByRole("button", { name: /この経路を切る/ })
+    .first()
+    .click();
+
+  await expect(diagnostic(page, "acoustic-feedback-loop")).toHaveCount(0);
+  // Same URL, same selection, same view — none of which survived a navigation.
+  await expect(page).toHaveURL(/view=diagram/);
+  await expect(page).toHaveURL(/sel=n2/);
+  await expect(page.locator("#space-n2")).toBeVisible();
 });
 
 /**

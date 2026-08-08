@@ -161,6 +161,17 @@ One route, one action, dispatched on a hidden `intent` field. Every write goes
 `applyOperation` / `applyFix` → `saveSetupDoc`, so mutation stays pure and testable and the
 AI phase can reuse the same path.
 
+**`setup-intents.ts` is the single implementation of what an intent means.** `applyIntent(doc,
+formData, catalog)` is pure, and both sides run it: the action against the stored document, and
+the browser against its own copy while the request is still in the air. It lives outside `av/`
+because `FormData` is this editor's detail and `av/` is what the CLI and the OBS extension will
+consume. Do not re-derive an intent's effect anywhere else — an optimistic result that came from
+a second implementation is a *different* answer from the one being saved, and the disagreement
+only shows up on the next reload.
+
+`rename-setup` and `delete-setup` return `elsewhere`: they are columns on the `setups` row, not
+edits to the document, so only the server can perform them.
+
 Four regions, not five tabs: `setup-tree.tsx` on the left (所在 → 機械 → アプリ, mirroring the
 diagram's box-in-box), the work surface in the middle, `setup-inspector.tsx` on the right, and
 the linter as a dock across the middle column only, so neither panel loses its height.
@@ -181,13 +192,54 @@ Every narrow override is written out per state rather than left to source order 
 query that silently loses to a `group-data-` rule looks exactly like a query that never
 matched, and the editor's own history has that bug in it.
 
-Lint runs in the loader. `apply-fix` posts the serialized `Fix` straight back; `canApplyFix`
-decides which ones get a button. Hovering a finding passes its `Diagnostic.cycle` to the
-diagram as `highlight`, which fades everything else — the danger colour alone cannot tell two
-reported cycles apart, because both wear it.
+**Lint and layout run in the browser.** The loader sends the document and the catalog and
+nothing else — no `Layout`, no `Diagnostic[]`. `buildGraph` → `lint` → `layoutGraph` are
+`useMemo`s in the component, so they also run during SSR and the first paint is unchanged. The
+catalog carries **every** unit in the ledger, not just this event's, because a node pointing at
+gear that was left behind has to keep resolving or `device-not-in-event` degrades into
+`unknown-reference`.
 
-Deferred on purpose: click-to-select on the canvas, client-side `lint` / `layoutGraph` with
-optimistic updates, and drag-to-wire. The hooks for all three already exist — see Diagram.
+Every form is a `SetupForm` (a `useFetcher`), and `useOptimisticDoc` replays each pending
+submission through `applyIntent`. So toggling a matrix cell re-lays out the diagram and re-runs
+the linter on the click — which is the loop the app exists for, and a round trip per cell was
+enough to stop people trying combinations. `replace-doc` is deliberately **not** optimistic: the
+server is what decides whether pasted text is a document, and applying it locally would reformat
+the box someone is still typing in.
+
+Consequences worth knowing:
+
+- `shouldRevalidate` returns false for a query-string-only move, so selecting and switching
+  views cost no round trip. A fetcher submission still revalidates, which is what swaps the
+  optimistic document for the saved one.
+- A refusal from the action lands on `fetcher.data`, not `actionData`, and **`useFetchers()`
+  cannot carry it**: the router drops an idle fetcher from that list one render after it
+  settles, so a shared reader sees the message flash and vanish. `SetupForm` renders its own
+  error under itself instead, which is also where it belongs. The status bar is left with the
+  drag (no form to report under) and `actionData` (the no-JavaScript path).
+- `layoutGraph` is seeded with the previous `Layout.order`, so one added cable does not
+  reshuffle a column under the cursor that drew it.
+- Two edits fired inside one round trip still race at the database — the action reads the
+  document, applies one intent and writes it whole. That is a property of a single-JSON-column
+  schema, not of the fetchers.
+- In e2e, an assertion can now pass while the write is still in the air. `saving(page, act)`
+  waits for the POST; anything whose effect has to outlive the current page needs it.
+
+**The picture is the wiring surface.** Clicking a box or a place frame drives `?sel=`; selecting
+anywhere scrolls the canvas to the box. Dragging jack to jack draws a link, and the two things
+`links` means are told apart by geometry alone — across the faces is a cable, along one face is
+an app picking a device on the computer under it — which is the same rule `orientHostAssignment`
+applies. The diagram stays geometric: `canWire` / `onWire` come from the route, which is the only
+place that knows about `hostNodeId`. Valid targets light up during a drag, Escape cancels, and
+hit testing is arithmetic against the port anchors rather than `pointerover` on a 3px circle.
+
+A drag is not keyboard-reachable; the cable and assignment forms in 結線表 remain the accessible
+path and must stay. Media mismatches are *allowed* by the drag, exactly as the form allows them —
+prevention in the UI is not detection, and the linter is the authority.
+
+`apply-fix` posts the serialized `Fix` straight back; `canApplyFix` decides which ones get a
+button. Hovering a finding passes its `Diagnostic.cycle` to the diagram as `highlight`, which
+fades everything else — the danger colour alone cannot tell two reported cycles apart, because
+both wear it.
 
 ## E2E (no real OAuth)
 
@@ -213,6 +265,11 @@ problem — cutting the MAIN send must not silence the stream.
 
 The panel exposes `data-testid="lint-panel"` and per-finding `data-rule-id` / `data-severity`.
 Keep those when restyling; they are the suite's only stable hook.
+
+Because the editor is optimistic, a "click then assert" test can pass before the write reaches
+D1. Use `saving(page, act)` whenever the effect has to outlive the current page — a serial group
+whose next step depends on this one, or a `page.goto` right after an edit, which otherwise aborts
+the request in flight. `dragWire` already does it.
 
 ### Diagram
 
@@ -283,16 +340,22 @@ The predicate counts only `cable` and `host` edges (`isPortWired`). Every join i
 space edges on both faces, so counting those would classify every join as "both" and the role
 would be fixed again in all but name.
 
-Two properties exist for the phases after this one, and both have tests:
+Two properties the editing surface rests on, and both have tests:
 
 - **Ports are first class.** A cable ends at a jack. Anchors come from the model's `ports` order,
   never from which links exist, so drawing a new cable cannot move anchors already on screen —
-  the precondition for visual wiring. `LayoutEdge` carries `linkId`, and the SVG carries
-  `data-node-key` / `data-port-key` / `data-link-id`, which is the hit-testing hook.
+  the precondition visual wiring needed. `LayoutEdge` carries `linkId`, and the SVG carries
+  `data-node-key` / `data-port-key` / `data-port-grip` / `data-link-id`.
 - **Small edits move the picture a little.** Every stage is deterministic, ties break on the
   incoming order, and `options.order` seeds the row ordering with a previous `Layout.order`.
-  Plain barycenter/median without that seed reshuffles a column when one link is added, which
-  makes live AI visualisation unreadable. Pass the seed when re-laying out an edited document.
+  Plain barycenter/median without that seed reshuffles a column when one link is added. The
+  route passes the seed on every re-layout; keep doing so.
+
+Both shapes a room wears — the dashed box for the air in it and the frame around everything
+standing in it — select the same room, so they must not share an accessible name. The frame keeps
+the plain name; the box says which medium it stands for, as `title` already does for the eye.
+Only the frame's caption strip is clickable: a frame spans the whole rig, and a hit area over its
+middle would swallow every click meant for the gear inside it.
 
 Three edge kinds are treated differently on purpose. `internal` is not drawn at all — it lives
 inside one box and the routing matrix is the honest view of it. `space` is not a cable, so it
