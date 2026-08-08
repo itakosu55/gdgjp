@@ -161,12 +161,33 @@ One route, one action, dispatched on a hidden `intent` field. Every write goes
 `applyOperation` / `applyFix` → `saveSetupDoc`, so mutation stays pure and testable and the
 AI phase can reuse the same path.
 
-Tabs are a `?tab=` search param rather than component state. Forms post to the current URL, so
-the tab survives a submit — toggling a routing cell must not bounce the user back to the first
-tab.
+Four regions, not five tabs: `setup-tree.tsx` on the left (所在 → 機械 → アプリ, mirroring the
+diagram's box-in-box), the work surface in the middle, `setup-inspector.tsx` on the right, and
+the linter as a dock across the middle column only, so neither panel loses its height.
+`setup-views.tsx` holds the three faces of the work surface plus the JSON, and
+`setup-view.ts` is the view model all three regions read so they never disagree about a name,
+a room or which findings point where.
 
-Lint runs in the loader and the panel sits above the tabs, always visible. `apply-fix` posts the
-serialized `Fix` straight back; `canApplyFix` decides which ones get a button.
+**The tabs are now views of the centre pane** (`?view=diagram|routing|cables|json`), and
+selection is `?sel=<nodeId> | space:<spaceId> | setup`. Both live in the URL for the reason
+`?tab=` did: forms post to the current URL, so toggling a routing cell must not throw away
+what was on screen. This is also what makes one implementation serve every width — the tree,
+the inspector and the dock are the same components at 1500px and at 400px, reflowed by two
+container queries (`@max-[1000px]`, `@max-[720px]`) and a three-state `auto | open | closed`
+flag per panel. `auto` means "follow the width", which is why selecting a tree row can close
+the drawer on a phone and do nothing on a desktop with one call.
+
+Every narrow override is written out per state rather than left to source order — a container
+query that silently loses to a `group-data-` rule looks exactly like a query that never
+matched, and the editor's own history has that bug in it.
+
+Lint runs in the loader. `apply-fix` posts the serialized `Fix` straight back; `canApplyFix`
+decides which ones get a button. Hovering a finding passes its `Diagnostic.cycle` to the
+diagram as `highlight`, which fades everything else — the danger colour alone cannot tell two
+reported cycles apart, because both wear it.
+
+Deferred on purpose: click-to-select on the canvas, client-side `lint` / `layoutGraph` with
+optimistic updates, and drag-to-wire. The hooks for all three already exist — see Diagram.
 
 ## E2E (no real OAuth)
 

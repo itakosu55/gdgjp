@@ -1,20 +1,17 @@
-import { Form, Link, redirect, useSearchParams } from "react-router";
-import { LintPanel, severityCounts } from "~/components/lint-panel";
-import { EmptyState, Field, Page, selectClassName } from "~/components/page";
+import { ChevronDown, Menu, Minus, PanelLeft, PanelRight, Plus } from "lucide-react";
+import type { ReactNode } from "react";
+import { useRef, useState } from "react";
+import { Link, redirect, useNavigation, useSearchParams } from "react-router";
+import { Header } from "~/components/header";
+import { LintPanel, SeverityChips, severityCounts } from "~/components/lint-panel";
+import { SetupInspector } from "~/components/setup-inspector";
+import { SetupTree } from "~/components/setup-tree";
+import { AddPanel, CablesView, JsonView, RoutingView } from "~/components/setup-views";
 import { SignalFlowDiagram } from "~/components/signal-flow-diagram";
-import { Button } from "~/components/ui/button";
-import { Input } from "~/components/ui/input";
-import { Textarea } from "~/components/ui/textarea";
 import { requireUser } from "~/lib/auth-redirect.server";
 import type { Fix } from "~/lib/av/diagnostics";
 import { describeNode } from "~/lib/av/diagnostics";
-import { buildGraph, isHostAssignment, orientHostAssignment } from "~/lib/av/graph";
-import {
-  COUPLING_LABELS,
-  SPACE_KIND_LABELS,
-  SPACE_KIND_SHORT_LABELS,
-  entries,
-} from "~/lib/av/labels";
+import { buildGraph, orientHostAssignment } from "~/lib/av/graph";
 import { layoutGraph } from "~/lib/av/layout";
 import { lint } from "~/lib/av/lint";
 import { applyFix, applyOperation, defaultRoutesFor } from "~/lib/av/mutations";
@@ -31,9 +28,12 @@ import {
   loadDevices,
   renameSetup,
   saveSetupDoc,
+  softDeleteSetup,
 } from "~/lib/db";
 import { emptyToNull, text } from "~/lib/form";
 import { newDocId } from "~/lib/id";
+import { buildNodeInfo, worstSeverities } from "~/lib/setup-view";
+import { cn } from "~/lib/utils";
 import type { Route } from "./+types/events.$eventId.setups.$setupId";
 
 export function meta({ data }: Route.MetaArgs) {
@@ -303,6 +303,7 @@ export async function action(args: Route.ActionArgs) {
     }
 
     case "delete-setup":
+      await softDeleteSetup(env.DB, setup.id);
       return redirect(`/events/${setup.eventId}`);
 
     default:
@@ -315,749 +316,383 @@ function splitPortRef(value: FormDataEntryValue | null): [string, string] | null
   return nodeId && portKey ? [nodeId, portKey] : null;
 }
 
-const TABS = [
-  { id: "devices", label: "機材" },
-  { id: "links", label: "結線" },
-  { id: "routing", label: "ルーティング" },
+/**
+ * The work surface's faces.
+ *
+ * These were page-level tabs (`?tab=`), which meant that acting on a finding
+ * naming "MG10XU の CH 2" cost a tab switch and lost whatever else was on
+ * screen. They are now views of the centre pane only: the tree and the
+ * inspector stay put, so one implementation serves every screen width instead
+ * of tabs on narrow ones and panels on wide ones.
+ */
+const VIEWS = [
   { id: "diagram", label: "図" },
-  { id: "json", label: "JSON" },
+  { id: "routing", label: "ルーティング" },
+  { id: "cables", label: "結線表" },
 ] as const;
+
+/** `auto` follows the screen width; the other two are the user overriding it. */
+type PanelState = "auto" | "open" | "closed";
 
 export default function SetupEditorPage({ loaderData, actionData }: Route.ComponentProps) {
   const { doc, models, available, diagnostics, nodeNames, layout, event, setup } = loaderData;
   const [params] = useSearchParams();
-  const tab = params.get("tab") ?? "devices";
+  const view = params.get("view") ?? "diagram";
+  const selection = params.get("sel");
+  const navigation = useNavigation();
 
-  const modelById = new Map(models.map((model) => [model.id, model]));
-  const deviceById = new Map(available.map((device) => [device.id, device]));
+  const [left, setLeft] = useState<PanelState>("auto");
+  const [right, setRight] = useState<PanelState>("auto");
+  const [adding, setAdding] = useState(false);
+  const [dockOpen, setDockOpen] = useState(true);
+  const [zoom, setZoom] = useState(1);
+  const [highlight, setHighlight] = useState<ReadonlySet<string> | null>(null);
+  const surface = useRef<HTMLDivElement>(null);
+
+  const hrefFor = (nextSelection: string, nextView?: string) => {
+    const next = new URLSearchParams(params);
+    next.set("sel", nextSelection);
+    if (nextView) next.set("view", nextView);
+    return `?${next}`;
+  };
+  const hrefForView = (nextView: string) => {
+    const next = new URLSearchParams(params);
+    next.set("view", nextView);
+    return `?${next}`;
+  };
+
+  const nodeInfo = buildNodeInfo(doc, models, available);
+  const computers = nodeInfo.filter((info) => info.model?.category === "computer");
+  const softwareModels = models.filter(
+    (model) =>
+      model.category === "software_broadcast" || model.category === "software_conferencing",
+  );
   const counts = severityCounts(diagnostics);
+  const severities = worstSeverities(diagnostics);
+  const spaceNames = Object.fromEntries(doc.spaces.map((space) => [space.id, space.label]));
+  const enabled = new Set(
+    doc.routing.map((route) => `${route.nodeId}::${route.inPort}::${route.bus}`),
+  );
   // The only thing the diagram draws in the danger colour. Routing facts — a
   // return path under the picture — are not faults and must not borrow red.
   const alerts = new Set(
     diagnostics.flatMap((diagnostic) => (diagnostic.cycle ?? []).map((edge) => edge.id)),
   );
 
-  const nodeInfo = doc.nodes.map((node) => {
-    // A software node names a model directly; everything else goes through the
-    // ledger. `deviceById` holds only this event's gear, so a node pointing at
-    // kit that was not brought still has to render — as its raw id if need be.
-    const device = node.deviceId ? deviceById.get(node.deviceId) : undefined;
-    const model = device
-      ? modelById.get(device.modelId)
-      : node.modelId
-        ? modelById.get(node.modelId)
-        : undefined;
-    return {
-      node,
-      device,
-      model,
-      label: node.label ?? device?.name ?? model?.name ?? node.deviceId ?? node.modelId ?? node.id,
-    };
-  });
-  const computers = nodeInfo.filter((info) => info.model?.category === "computer");
-  const softwareModels = models.filter(
-    (model) =>
-      model.category === "software_broadcast" || model.category === "software_conferencing",
-  );
+  // Clicking a row on a phone has to get the drawer out of the way; on a wide
+  // screen `auto` is exactly where the panel already was, so the same call does
+  // nothing there. An inspector the user collapsed on purpose stays collapsed.
+  const onSelect = () => {
+    setLeft("auto");
+    setRight((current) => (current === "closed" ? current : "open"));
+  };
+
+  const fitWidth = () => {
+    const element = surface.current;
+    if (!element || layout.width === 0) return;
+    setZoom(Math.max(0.4, Math.min(2, (element.clientWidth - 32) / layout.width)));
+  };
 
   return (
-    <Page
-      user={loaderData.user}
-      title={setup.name}
-      description={
-        <>
-          機材・結線・ルーティングを登録すると下の検査結果が更新されます。ゲインや EQ
-          は意図的に持ちません。
-        </>
-      }
-      breadcrumb={
-        <Link to={`/events/${event.id}`} className="hover:underline">
+    <div
+      className="group/app @container flex h-dvh flex-col overflow-hidden"
+      data-left={left}
+      data-right={right}
+    >
+      <Header user={loaderData.user} fluid />
+
+      <div className="flex flex-none items-center gap-2 border-b px-2 py-1.5">
+        <IconButton
+          label="構成の内容を開く"
+          onClick={() => setLeft("open")}
+          className="hidden @max-[720px]:inline-flex"
+        >
+          <Menu className="size-4" />
+        </IconButton>
+        <IconButton
+          label={left === "closed" ? "左パネルを開く" : "左パネルを折りたたむ"}
+          onClick={() => setLeft((current) => (current === "closed" ? "auto" : "closed"))}
+          className="@max-[720px]:hidden"
+        >
+          <PanelLeft className="size-4" />
+        </IconButton>
+        <Link
+          to={`/events/${event.id}`}
+          className="truncate text-xs text-muted-foreground hover:underline @max-[720px]:hidden"
+        >
           ← {event.title}
         </Link>
-      }
-      wide
-    >
-      {setup.docError ? <p className="mb-4 text-sm text-destructive">{setup.docError}</p> : null}
-      {actionData?.error ? (
-        <p className="mb-4 text-sm text-destructive">{actionData.error}</p>
-      ) : null}
-
-      <section className="mb-8">
-        <h2 className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
-          検査結果
-          {counts.critical > 0 ? (
-            <span className="rounded bg-destructive px-1.5 py-0.5 text-xs text-destructive-foreground">
-              重大 {counts.critical}
-            </span>
-          ) : null}
-          {counts.error > 0 ? (
-            <span className="rounded border border-destructive/50 px-1.5 py-0.5 text-xs text-destructive">
-              エラー {counts.error}
-            </span>
-          ) : null}
-          {counts.warn > 0 ? (
-            <span className="rounded border border-amber-500/50 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-400">
-              警告 {counts.warn}
-            </span>
-          ) : null}
-        </h2>
-        <LintPanel diagnostics={diagnostics} nodeNames={nodeNames} />
-      </section>
-
-      <nav className="mb-4 flex flex-wrap gap-1 border-b">
-        {TABS.map((entry) => (
-          <Link
-            key={entry.id}
-            to={`?tab=${entry.id}`}
-            replace
-            className={
-              tab === entry.id
-                ? "-mb-px border-b-2 border-primary px-3 py-2 text-sm font-medium"
-                : "-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-            }
-          >
-            {entry.label}
-          </Link>
-        ))}
-      </nav>
-
-      {tab === "devices" ? (
-        <DevicesTab
-          doc={doc}
-          nodeInfo={nodeInfo}
-          available={available}
-          softwareModels={softwareModels}
-          computers={computers}
-        />
-      ) : null}
-      {tab === "links" ? <LinksTab doc={doc} nodeInfo={nodeInfo} /> : null}
-      {tab === "routing" ? <RoutingTab doc={doc} nodeInfo={nodeInfo} /> : null}
-      {tab === "diagram" ? <SignalFlowDiagram layout={layout} alerts={alerts} /> : null}
-      {tab === "json" ? <JsonTab doc={doc} setupName={setup.name} /> : null}
-    </Page>
-  );
-}
-
-type NodeInfo = {
-  node: SetupDoc["nodes"][number];
-  device: { id: string; name: string } | undefined;
-  model: DeviceModel | undefined;
-  label: string;
-};
-
-/**
- * The spaces worth offering as a node's 所在.
- *
- * A meeting is where a join is and a room is where everything else is, and the
- * two are never the alternative to one another. Offering both made "所在" read
- * as a free-form tag; the graph then quietly ignored the nonsense combinations
- * (`space-kind-mismatch`) instead of the form never asking.
- */
-function spacesFor(doc: SetupDoc, model: DeviceModel | undefined) {
-  const wantsMeeting = model?.category === "software_conferencing";
-  return doc.spaces.filter((space) =>
-    wantsMeeting ? space.kind === "transport" : space.kind !== "transport",
-  );
-}
-
-function DevicesTab({
-  doc,
-  nodeInfo,
-  available,
-  softwareModels,
-  computers,
-}: {
-  doc: SetupDoc;
-  nodeInfo: NodeInfo[];
-  available: { id: string; name: string }[];
-  softwareModels: DeviceModel[];
-  computers: NodeInfo[];
-}) {
-  return (
-    <div className="grid gap-8 lg:grid-cols-[1fr_320px]">
-      <div className="flex flex-col gap-8">
-        <section>
-          <h2 className="mb-1 text-sm font-semibold">空間</h2>
-          <p className="mb-3 text-xs text-muted-foreground">
-            スピーカーは空間へ出力し、マイクは空間から入力します。ここを登録しないと
-            ハウリングは検出できません。機材の「所在」にも使われ、同じ部屋のものは 信号フロー図で 1
-            つの枠にまとまります。
-          </p>
-          {doc.spaces.length === 0 ? (
-            <EmptyState>空間がまだありません。</EmptyState>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {doc.spaces.map((space) => (
-                <li
-                  key={space.id}
-                  className="flex items-center justify-between gap-2 rounded-lg border p-3 text-sm"
-                >
-                  <span>
-                    <span className="font-mono text-xs text-muted-foreground">{space.id}</span>{" "}
-                    {space.label}
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {SPACE_KIND_SHORT_LABELS[space.kind]}
-                    </span>
-                  </span>
-                  <Form method="post">
-                    <input type="hidden" name="intent" value="remove-space" />
-                    <input type="hidden" name="spaceId" value={space.id} />
-                    <button
-                      type="submit"
-                      className="text-xs text-muted-foreground hover:text-destructive"
-                    >
-                      削除
-                    </button>
-                  </Form>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section>
-          <h2 className="mb-3 text-sm font-semibold">機材</h2>
-          {nodeInfo.length === 0 ? (
-            <EmptyState>右のフォームからイベントの利用可能機材を追加してください。</EmptyState>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {nodeInfo.map((info) => (
-                <div key={info.node.id} className="rounded-lg border p-4">
-                  <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-                    <span>
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {info.node.id}
-                      </span>{" "}
-                      <span className="font-medium">{info.label}</span>
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {info.model ? info.model.category : "型番不明"}
-                    </span>
-                  </div>
-                  <Form method="post" className="grid gap-3 sm:grid-cols-2">
-                    <input type="hidden" name="intent" value="update-node" />
-                    <input type="hidden" name="nodeId" value={info.node.id} />
-                    <Field label="表示名" htmlFor={`label-${info.node.id}`}>
-                      <Input
-                        id={`label-${info.node.id}`}
-                        name="label"
-                        defaultValue={info.node.label ?? ""}
-                        placeholder={info.device?.name ?? ""}
-                        maxLength={120}
-                      />
-                    </Field>
-                    <Field
-                      label="所在"
-                      htmlFor={`space-${info.node.id}`}
-                      hint={
-                        info.model?.category === "software_conferencing"
-                          ? "参加しているミーティング。"
-                          : "この機材が置かれている部屋。マイクとスピーカーはここで空間と結合します。"
-                      }
-                    >
-                      <select
-                        id={`space-${info.node.id}`}
-                        name="spaceId"
-                        defaultValue={info.node.spaceId ?? ""}
-                        className={selectClassName}
-                      >
-                        <option value="">（割り当てなし）</option>
-                        {spacesFor(doc, info.model).map((space) => (
-                          <option key={space.id} value={space.id}>
-                            {space.label}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                    <Field label="空間との結合" htmlFor={`coupling-${info.node.id}`}>
-                      <select
-                        id={`coupling-${info.node.id}`}
-                        name="coupling"
-                        defaultValue={info.node.coupling ?? "open"}
-                        className={selectClassName}
-                      >
-                        {entries(COUPLING_LABELS).map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                    <Field
-                      label="ホスト PC"
-                      htmlFor={`host-${info.node.id}`}
-                      hint="OBS や Meet はここで動く PC を指定します。"
-                    >
-                      <select
-                        id={`host-${info.node.id}`}
-                        name="hostNodeId"
-                        defaultValue={info.node.hostNodeId ?? ""}
-                        className={selectClassName}
-                      >
-                        <option value="">（なし）</option>
-                        {computers
-                          .filter((computer) => computer.node.id !== info.node.id)
-                          .map((computer) => (
-                            <option key={computer.node.id} value={computer.node.id}>
-                              {computer.label}
-                            </option>
-                          ))}
-                      </select>
-                    </Field>
-                    <div className="sm:col-span-2">
-                      <Button type="submit" variant="secondary" size="sm">
-                        保存
-                      </Button>
-                    </div>
-                  </Form>
-                  <Form method="post" className="mt-2">
-                    <input type="hidden" name="intent" value="remove-node" />
-                    <input type="hidden" name="nodeId" value={info.node.id} />
-                    <button
-                      type="submit"
-                      className="text-xs text-muted-foreground hover:text-destructive"
-                    >
-                      構成から外す
-                    </button>
-                  </Form>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+        <h1 className="truncate text-sm font-medium">{setup.name}</h1>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <SeverityChips counts={counts} />
+        </div>
+        <span className="flex-1" />
+        <Link
+          to={hrefFor("setup")}
+          replace
+          className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
+        >
+          構成の設定
+        </Link>
+        <IconButton
+          label="インスペクタを開く"
+          onClick={() => setRight("open")}
+          className="hidden @max-[1000px]:inline-flex"
+        >
+          <PanelRight className="size-4" />
+        </IconButton>
+        <IconButton
+          label={right === "closed" ? "右パネルを開く" : "右パネルを折りたたむ"}
+          onClick={() => setRight((current) => (current === "closed" ? "auto" : "closed"))}
+          className="@max-[1000px]:hidden"
+        >
+          <PanelRight className="size-4" />
+        </IconButton>
       </div>
 
-      <div className="flex flex-col gap-6">
-        <section className="rounded-lg border p-4">
-          <h2 className="mb-3 text-sm font-semibold">機材を追加</h2>
-          {available.length === 0 && softwareModels.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              イベント側で利用可能機材を選んでください。
-            </p>
-          ) : (
-            <Form method="post" className="flex flex-col gap-3">
-              <input type="hidden" name="intent" value="add-node" />
-              <Field label="機材" htmlFor="addDevice">
-                <select id="addDevice" name="deviceId" required className={selectClassName}>
-                  <optgroup label="イベントの利用可能機材">
-                    {available.map((device) => (
-                      <option key={device.id} value={`d:${device.id}`}>
-                        {device.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                  {/* Software comes from the catalog, not the ledger: it is not
-                      a physical unit, and two joins into one meeting are two
-                      nodes of one model. */}
-                  <optgroup label="ソフトウェア">
-                    {softwareModels.map((model) => (
-                      <option key={model.id} value={`m:${model.id}`}>
-                        {model.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                </select>
-              </Field>
-              <p className="text-xs text-muted-foreground">
-                ソフトウェアを追加したら、ホスト PC を指定してください。
-              </p>
-              <Button type="submit">追加</Button>
-            </Form>
+      {/* The four regions. The dock spans the centre column only, so collapsing
+          it never disturbs the two panels and neither panel loses its height. */}
+      <div
+        className={cn(
+          "relative grid min-h-0 flex-1",
+          "[--left:264px] [--right:320px]",
+          "grid-cols-[var(--left)_minmax(0,1fr)_var(--right)] grid-rows-[minmax(0,1fr)_auto]",
+          "[grid-template-areas:'left_center_right'_'left_dock_right']",
+          "group-data-[left=closed]/app:[--left:0px] group-data-[right=closed]/app:[--right:0px]",
+          // Narrow: the panel leaves the grid and becomes an overlay, so its
+          // column has to collapse whichever state it is in. Each case is
+          // written out rather than relying on source order to beat the rule
+          // above — a container query that silently loses is invisible.
+          "@max-[1000px]:group-data-[right=auto]/app:[--right:0px]",
+          "@max-[1000px]:group-data-[right=open]/app:[--right:0px]",
+          "@max-[720px]:group-data-[left=auto]/app:[--left:0px]",
+          "@max-[720px]:group-data-[left=open]/app:[--left:0px]",
+        )}
+      >
+        <aside
+          className={cn(
+            "flex min-w-0 flex-col overflow-hidden border-r [grid-area:left]",
+            "@max-[720px]:absolute @max-[720px]:inset-y-0 @max-[720px]:left-0 @max-[720px]:z-20",
+            "@max-[720px]:w-[268px] @max-[720px]:bg-background @max-[720px]:shadow-xl",
+            "@max-[720px]:-translate-x-full @max-[720px]:transition-transform",
+            "@max-[720px]:group-data-[left=open]/app:translate-x-0",
           )}
-        </section>
-
-        <section className="rounded-lg border p-4">
-          <h2 className="mb-3 text-sm font-semibold">空間を追加</h2>
-          <Form method="post" className="flex flex-col gap-3">
-            <input type="hidden" name="intent" value="add-space" />
-            <Field label="名前" htmlFor="spaceLabel">
-              <Input
-                id="spaceLabel"
-                name="label"
-                required
-                placeholder="メインホール"
-                maxLength={120}
-              />
-            </Field>
-            <Field label="種別" htmlFor="spaceKind">
-              <select id="spaceKind" name="kind" className={selectClassName}>
-                {entries(SPACE_KIND_LABELS).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field
-              label="物理空間キー"
-              htmlFor="venueKey"
-              hint="将来トラックを分けたとき、同じ部屋だと判定するための任意の識別子です。"
+        >
+          <div className="flex flex-none items-center gap-2 border-b px-3 py-2">
+            <h2 className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+              構成の内容
+            </h2>
+            <span className="flex-1" />
+            <IconButton
+              label="機材と空間を追加"
+              onClick={() => setAdding((current) => !current)}
+              expanded={adding}
             >
-              <Input id="venueKey" name="venueKey" placeholder="hall-a" maxLength={64} />
-            </Field>
-            <Field
-              label="ミーティングキー"
-              htmlFor="meetingKey"
-              hint="伝送空間のみ。将来トラックを分けたとき、同じミーティングだと判定するための任意の識別子です。"
-            >
-              <Input id="meetingKey" name="meetingKey" placeholder="meet-abc" maxLength={64} />
-            </Field>
-            <Button type="submit">追加</Button>
-          </Form>
-        </section>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Cables and device selections, kept in separate tables.
- *
- * They were one list, which is why the form used to carry a caveat about
- * out→out being correct "only between an app and its host PC". A caveat like
- * that is the sign of two relationships wearing one name: a cable physically
- * exists and someone can unplug it, while a device selection is a dropdown in
- * OBS. Splitting them lets each have its own vocabulary, and lets the app
- * derive the direction instead of explaining it.
- */
-function LinksTab({ doc, nodeInfo }: { doc: SetupDoc; nodeInfo: NodeInfo[] }) {
-  const assignments = doc.links.filter((link) => isHostAssignment(doc, link));
-  const cables = doc.links.filter((link) => !isHostAssignment(doc, link));
-
-  const portOptions = (filter: (port: DeviceModel["ports"][number]) => boolean) =>
-    nodeInfo.flatMap((info) =>
-      (info.model?.ports ?? []).filter(filter).map((port) => ({
-        value: `${info.node.id}::${port.key}`,
-        label: `${info.label} / ${port.label}`,
-      })),
-    );
-  const outputs = portOptions((port) => port.direction === "out");
-  const inputs = portOptions((port) => port.direction === "in");
-
-  const hosted = nodeInfo.filter((info) => info.node.hostNodeId);
-  const appPorts = hosted.flatMap((info) =>
-    (info.model?.ports ?? []).map((port) => ({
-      value: `${info.node.id}::${port.key}`,
-      label: `${info.label} / ${port.label} (${port.direction === "out" ? "出力" : "入力"})`,
-    })),
-  );
-  const hostIds = new Set(hosted.map((info) => info.node.hostNodeId));
-  const hostPorts = nodeInfo
-    .filter((info) => hostIds.has(info.node.id))
-    .map((info) => ({
-      label: info.label,
-      ports: (info.model?.ports ?? []).map((port) => ({
-        value: `${info.node.id}::${port.key}`,
-        label: `${port.label} (${port.direction === "out" ? "出力" : "入力"})`,
-      })),
-    }));
-
-  return (
-    <div className="grid gap-8 lg:grid-cols-[1fr_320px]">
-      <div className="flex flex-col gap-8">
-        <section>
-          <h2 className="mb-1 text-sm font-semibold">ケーブル</h2>
-          <p className="mb-3 text-xs text-muted-foreground">
-            物理的に挿さっているもの。出力から入力へ流れます。
-          </p>
-          {cables.length === 0 ? (
-            <EmptyState>ケーブルがまだありません。</EmptyState>
-          ) : (
-            <LinkTable
-              links={cables}
-              headings={["接続元", "接続先"]}
-              cells={(link) => [describePort(nodeInfo, link.from), describePort(nodeInfo, link.to)]}
-            />
-          )}
-        </section>
-
-        <section>
-          <h2 className="mb-1 text-sm font-semibold">アプリの入出力割り当て</h2>
-          <p className="mb-3 text-xs text-muted-foreground">
-            ケーブルではなく、アプリがホスト PC のどのデバイスを使うかの設定です。
-          </p>
-          {assignments.length === 0 ? (
-            <EmptyState>割り当てがまだありません。</EmptyState>
-          ) : (
-            <LinkTable
-              links={assignments}
-              headings={["アプリ側", "PC 側"]}
-              cells={(link) => {
-                const appFirst = doc.nodes.find((node) => node.id === link.from[0])?.hostNodeId;
-                const app = appFirst ? link.from : link.to;
-                const host = appFirst ? link.to : link.from;
-                return [describePort(nodeInfo, app), describePort(nodeInfo, host)];
-              }}
-            />
-          )}
-        </section>
-      </div>
-
-      <div className="flex flex-col gap-4">
-        <section className="rounded-lg border p-4">
-          <h2 className="mb-3 text-sm font-semibold">ケーブルを追加</h2>
-          {outputs.length === 0 || inputs.length === 0 ? (
-            <p className="text-sm text-muted-foreground">先に機材を追加してください。</p>
-          ) : (
-            <Form method="post" className="flex flex-col gap-3">
-              <input type="hidden" name="intent" value="add-link" />
-              <Field label="接続元 (出力)" htmlFor="linkFrom">
-                <select id="linkFrom" name="from" required className={selectClassName}>
-                  {outputs.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="接続先 (入力)" htmlFor="linkTo">
-                <select id="linkTo" name="to" required className={selectClassName}>
-                  {inputs.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Button type="submit">追加</Button>
-            </Form>
-          )}
-        </section>
-
-        <section className="rounded-lg border p-4">
-          <h2 className="mb-3 text-sm font-semibold">割り当てを追加</h2>
-          {appPorts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              先にホスト PC を指定したアプリを追加してください。
-            </p>
-          ) : (
-            <Form method="post" className="flex flex-col gap-3">
-              <input type="hidden" name="intent" value="add-assignment" />
-              <Field label="アプリ側のポート" htmlFor="assignApp">
-                <select id="assignApp" name="app" required className={selectClassName}>
-                  {appPorts.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field
-                label="PC 側のデバイス"
-                htmlFor="assignHost"
-                hint="入力には入力を、出力には出力を選びます。向きは自動で決まります。"
-              >
-                <select id="assignHost" name="host" required className={selectClassName}>
-                  {hostPorts.map((group) => (
-                    <optgroup key={group.label} label={group.label}>
-                      {group.ports.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-              </Field>
-              <Button type="submit">追加</Button>
-            </Form>
-          )}
-        </section>
-      </div>
-    </div>
-  );
-}
-
-function LinkTable({
-  links,
-  headings,
-  cells,
-}: {
-  links: SetupDoc["links"];
-  headings: [string, string];
-  cells: (link: SetupDoc["links"][number]) => [string, string];
-}) {
-  return (
-    <div className="overflow-x-auto rounded-lg border">
-      <table className="w-full text-sm">
-        <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
-          <tr>
-            <th className="px-3 py-2">ID</th>
-            <th className="px-3 py-2">{headings[0]}</th>
-            <th className="px-3 py-2">{headings[1]}</th>
-            <th className="px-3 py-2" />
-          </tr>
-        </thead>
-        <tbody>
-          {links.map((link) => {
-            const [left, right] = cells(link);
-            return (
-              <tr key={link.id} className="border-t">
-                <td className="px-3 py-2 font-mono text-xs">{link.id}</td>
-                <td className="px-3 py-2">{left}</td>
-                <td className="px-3 py-2">{right}</td>
-                <td className="px-3 py-2 text-right">
-                  <Form method="post">
-                    <input type="hidden" name="intent" value="remove-link" />
-                    <input type="hidden" name="linkId" value={link.id} />
-                    <button
-                      type="submit"
-                      className="text-xs text-muted-foreground hover:text-destructive"
-                    >
-                      削除
-                    </button>
-                  </Form>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function describePort(nodeInfo: NodeInfo[], ref: readonly [string, string]): string {
-  const info = nodeInfo.find((entry) => entry.node.id === ref[0]);
-  const port = info?.model?.ports.find((entry) => entry.key === ref[1]);
-  return `${info?.label ?? ref[0]} / ${port?.label ?? ref[1]}`;
-}
-
-function RoutingTab({ doc, nodeInfo }: { doc: SetupDoc; nodeInfo: NodeInfo[] }) {
-  const matrixNodes = nodeInfo.filter(
-    (info) => info.model?.internalRouting === "matrix" && info.model.buses.length > 0,
-  );
-  const enabled = new Set(
-    doc.routing.map((route) => `${route.nodeId}::${route.inPort}::${route.bus}`),
-  );
-
-  if (matrixNodes.length === 0) {
-    return (
-      <EmptyState>
-        ルーティング行列を持つ機材がありません。ミキサーやオーディオインターフェイス、配信ソフトを
-        追加すると表示されます。
-      </EmptyState>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-8">
-      <p className="text-xs text-muted-foreground">
-        チェックは「その入力がそのバスに乗るか」だけを表します。レベルやゲインは持ちません。
-        リモート登壇者へのエコーは、会議ソフトの音声が送出バスに乗っていることが原因です。
-      </p>
-      {matrixNodes.map((info) => {
-        const model = info.model;
-        if (!model) return null;
-        const inputs = model.ports.filter((port) => port.direction === "in");
-        return (
-          <section key={info.node.id}>
-            <h2 className="mb-3 text-sm font-semibold">{info.label}</h2>
-            <div className="overflow-x-auto rounded-lg border">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-xs text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 text-left">入力</th>
-                    {model.buses.map((bus) => (
-                      <th key={bus.key} className="px-3 py-2 text-center">
-                        {bus.label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {inputs.map((port) => (
-                    <tr key={port.key} className="border-t">
-                      <td className="px-3 py-2">{port.label}</td>
-                      {model.buses.map((bus) => {
-                        const on = enabled.has(`${info.node.id}::${port.key}::${bus.key}`);
-                        return (
-                          <td key={bus.key} className="px-3 py-2 text-center">
-                            <Form method="post">
-                              <input type="hidden" name="intent" value="toggle-route" />
-                              <input type="hidden" name="nodeId" value={info.node.id} />
-                              <input type="hidden" name="inPort" value={port.key} />
-                              <input type="hidden" name="bus" value={bus.key} />
-                              <button
-                                type="submit"
-                                aria-label={`${port.label} → ${bus.label}`}
-                                aria-pressed={on}
-                                className={
-                                  on
-                                    ? "size-5 rounded border border-primary bg-primary text-xs text-primary-foreground"
-                                    : "size-5 rounded border border-input text-xs text-muted-foreground hover:border-ring"
-                                }
-                              >
-                                {on ? "✓" : ""}
-                              </button>
-                            </Form>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        );
-      })}
-    </div>
-  );
-}
-
-function JsonTab({ doc, setupName }: { doc: SetupDoc; setupName: string }) {
-  return (
-    <div className="flex flex-col gap-8">
-      <section>
-        <h2 className="mb-1 text-sm font-semibold">構成ドキュメント</h2>
-        <p className="mb-3 text-xs text-muted-foreground">
-          座標を持たない自己完結の JSON です。イベント間のコピーや、将来の AI 提案の入出力が
-          この形式になります。
-        </p>
-        <Form method="post" className="flex flex-col gap-3">
-          <input type="hidden" name="intent" value="replace-doc" />
-          <Textarea
-            name="doc"
-            rows={22}
-            defaultValue={JSON.stringify(doc, null, 2)}
-            className="font-mono text-xs"
-            spellCheck={false}
-          />
-          <div>
-            <Button type="submit" variant="secondary">
-              この内容で置き換える
-            </Button>
+              <Plus className="size-4" />
+            </IconButton>
           </div>
-        </Form>
-      </section>
+          <div className="min-h-0 flex-1 overflow-auto">
+            {adding ? <AddPanel available={available} softwareModels={softwareModels} /> : null}
+            <SetupTree
+              doc={doc}
+              nodeInfo={nodeInfo}
+              severities={severities}
+              selection={selection}
+              hrefFor={hrefFor}
+              onSelect={onSelect}
+            />
+          </div>
+        </aside>
 
-      <section className="grid gap-6 lg:grid-cols-2">
-        <div>
-          <h2 className="mb-3 text-sm font-semibold">メモ</h2>
-          <Form method="post" className="flex flex-col gap-3">
-            <input type="hidden" name="intent" value="set-notes" />
-            <Textarea name="notes" rows={5} defaultValue={doc.notes ?? ""} />
-            <div>
-              <Button type="submit" variant="secondary" size="sm">
-                保存
-              </Button>
-            </div>
-          </Form>
+        <div className="flex min-h-0 min-w-0 flex-col [grid-area:center]">
+          <div className="flex flex-none items-center gap-1 overflow-x-auto border-b px-2 py-1.5">
+            {VIEWS.map((entry) => (
+              <Link
+                key={entry.id}
+                to={hrefForView(entry.id)}
+                replace
+                aria-current={view === entry.id ? "page" : undefined}
+                className={cn(
+                  "shrink-0 rounded-md px-2.5 py-1 text-sm whitespace-nowrap text-muted-foreground hover:bg-secondary hover:text-foreground",
+                  view === entry.id && "bg-secondary font-medium text-foreground",
+                )}
+              >
+                {entry.label}
+              </Link>
+            ))}
+            <span className="flex-1" />
+            {view === "diagram" ? (
+              <div className="flex shrink-0 items-center gap-1">
+                <IconButton label="縮小" onClick={() => setZoom((z) => Math.max(0.4, z - 0.1))}>
+                  <Minus className="size-4" />
+                </IconButton>
+                <span className="min-w-10 text-center text-xs text-muted-foreground tabular-nums">
+                  {Math.round(zoom * 100)}%
+                </span>
+                <IconButton label="拡大" onClick={() => setZoom((z) => Math.min(2, z + 0.1))}>
+                  <Plus className="size-4" />
+                </IconButton>
+                <button
+                  type="button"
+                  onClick={fitWidth}
+                  className="rounded-md px-2 py-1 text-xs whitespace-nowrap text-muted-foreground hover:bg-secondary hover:text-foreground"
+                >
+                  幅に合わせる
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          <div ref={surface} className="min-h-0 flex-1 overflow-auto">
+            {view === "diagram" ? (
+              <div className="w-max min-w-full p-4">
+                <SignalFlowDiagram
+                  layout={layout}
+                  alerts={alerts}
+                  highlight={highlight}
+                  scale={zoom}
+                />
+              </div>
+            ) : null}
+            {view === "routing" ? <RoutingView nodeInfo={nodeInfo} enabled={enabled} /> : null}
+            {view === "cables" ? <CablesView doc={doc} nodeInfo={nodeInfo} /> : null}
+            {view === "json" ? <JsonView doc={doc} /> : null}
+          </div>
         </div>
-        <div>
-          <h2 className="mb-3 text-sm font-semibold">構成名</h2>
-          <Form method="post" className="flex flex-col gap-3">
-            <input type="hidden" name="intent" value="rename-setup" />
-            <Input name="name" defaultValue={setupName} maxLength={120} />
-            <div>
-              <Button type="submit" variant="secondary" size="sm">
-                変更
-              </Button>
+
+        <aside
+          className={cn(
+            "flex min-w-0 flex-col overflow-hidden border-l [grid-area:right]",
+            "@max-[1000px]:absolute @max-[1000px]:inset-y-0 @max-[1000px]:right-0 @max-[1000px]:z-20",
+            "@max-[1000px]:w-80 @max-[1000px]:bg-background @max-[1000px]:shadow-xl",
+            "@max-[1000px]:translate-x-full @max-[1000px]:transition-transform",
+            "@max-[1000px]:group-data-[right=open]/app:translate-x-0",
+          )}
+        >
+          <div className="flex flex-none items-center border-b px-3 py-2">
+            <h2 className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+              インスペクタ
+            </h2>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto p-3">
+            {/* Keyed on the selection so the uncontrolled fields inside are torn
+                down and rebuilt when a different thing is selected. React reuses
+                a `<select>` across a re-render and leaves its selected option
+                alone — `defaultValue` only applies at mount — so without this
+                the panel keeps showing the *previous* node's 所在, 結合 and
+                ホスト PC. Not keying it also means a stale value is what a 保存
+                would write. */}
+            <SetupInspector
+              key={selection ?? "none"}
+              doc={doc}
+              nodeInfo={nodeInfo}
+              selection={selection}
+              computers={computers}
+              enabled={enabled}
+              setupName={setup.name}
+              hrefFor={hrefFor}
+              matrixInCenter={view === "routing"}
+            />
+          </div>
+        </aside>
+
+        <section className="flex min-w-0 flex-col border-t [grid-area:dock]">
+          <div className="flex flex-none items-center gap-2 px-2 py-1.5">
+            <IconButton
+              label={dockOpen ? "検査結果を折りたたむ" : "検査結果を開く"}
+              onClick={() => setDockOpen((current) => !current)}
+              expanded={dockOpen}
+            >
+              <ChevronDown
+                className={cn("size-4 transition-transform", !dockOpen && "-rotate-90")}
+              />
+            </IconButton>
+            <h2 className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+              検査結果
+            </h2>
+            <SeverityChips counts={counts} />
+            <span className="flex-1" />
+            <span className="truncate text-[11px] text-muted-foreground @max-[720px]:hidden">
+              行にカーソルを合わせると該当経路だけが残ります
+            </span>
+          </div>
+          {dockOpen ? (
+            <div className="max-h-52 overflow-auto border-t">
+              <LintPanel
+                diagnostics={diagnostics}
+                nodeNames={nodeNames}
+                spaceNames={spaceNames}
+                hrefForNode={hrefFor}
+                onFocus={setHighlight}
+              />
             </div>
-          </Form>
-        </div>
-      </section>
+          ) : null}
+        </section>
+
+        {/* Only ever reachable while a panel is overlaying the work surface. */}
+        <button
+          type="button"
+          aria-label="パネルを閉じる"
+          onClick={() => {
+            setLeft("auto");
+            setRight("auto");
+          }}
+          className={cn(
+            "absolute inset-0 z-10 hidden bg-black/30",
+            "@max-[1000px]:group-data-[right=open]/app:block",
+            "@max-[720px]:group-data-[left=open]/app:block",
+          )}
+        />
+      </div>
+
+      <div className="flex flex-none items-center gap-4 border-t bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
+        <span>{navigation.state === "idle" ? "保存済み" : "保存中…"}</span>
+        {view === "diagram" ? <span>表示 {Math.round(zoom * 100)}%</span> : null}
+        {setup.docError ? <span className="text-destructive">{setup.docError}</span> : null}
+        {actionData?.error ? <span className="text-destructive">{actionData.error}</span> : null}
+        <span className="flex-1" />
+        <Link
+          to={hrefForView("json")}
+          replace
+          aria-current={view === "json" ? "page" : undefined}
+          className={cn(
+            "rounded px-1.5 py-0.5 hover:bg-secondary hover:text-foreground",
+            view === "json" && "bg-secondary text-foreground",
+          )}
+        >
+          {"</> JSON"}
+        </Link>
+      </div>
     </div>
+  );
+}
+
+function IconButton({
+  label,
+  onClick,
+  expanded,
+  className,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  expanded?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      aria-expanded={expanded}
+      className={cn(
+        "rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground",
+        className,
+      )}
+    >
+      {children}
+    </button>
   );
 }

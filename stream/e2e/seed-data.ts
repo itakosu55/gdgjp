@@ -166,6 +166,34 @@ function transportEchoDoc() {
   };
 }
 
+/**
+ * Two rooms, and nodes whose 所在 and ホスト PC all differ from each other.
+ *
+ * The inspector's fields are uncontrolled, so selecting a different node has to
+ * rebuild them: React reuses a `<select>` across a re-render and leaves its
+ * chosen option alone, and the value left over from the node before is what a
+ * 保存 would write. One room hides it — the odds are even that the leftover
+ * happens to be right.
+ */
+function twoRoomsDoc() {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      { id: "sp1", kind: "acoustic", label: "E2E ホール A" },
+      { id: "sp2", kind: "acoustic", label: "E2E ホール B" },
+    ],
+    nodes: [
+      { id: "n1", deviceId: "e2e_dev_mixer" },
+      { id: "n2", deviceId: "e2e_dev_mic", spaceId: "sp2" },
+      { id: "n3", deviceId: "e2e_dev_speaker", spaceId: "sp1" },
+      { id: "n4", deviceId: "e2e_dev_pc", spaceId: "sp1" },
+      { id: "n5", modelId: MODELS.obs, hostNodeId: "n4" },
+    ],
+    links: [],
+    routing: [],
+  };
+}
+
 const EMPTY_DOC = { schemaVersion: 1, spaces: [], nodes: [], links: [], routing: [] };
 
 export const SETUPS = [
@@ -201,6 +229,20 @@ export const SETUPS = [
   // Built up from nothing by editor.spec.ts.
   { id: "e2e_setup_editing", eventId: EVENT.id, name: "E2E 編集用", doc: EMPTY_DOC },
   { id: "e2e_setup_json", eventId: EVENT.id, name: "E2E JSON 編集用", doc: silentDoc() },
+  // Read-only: the inspector spec only changes which node is selected.
+  {
+    id: "e2e_setup_inspector",
+    eventId: EVENT.id,
+    name: "E2E インスペクタ確認",
+    doc: twoRoomsDoc(),
+  },
+  // Mutated: an edit is applied from the dock while the JSON is on screen.
+  {
+    id: "e2e_setup_json_dock",
+    eventId: EVENT.id,
+    name: "E2E JSON 同時表示",
+    doc: howlingDoc(),
+  },
   // Lives on the event whose gear list event.spec.ts is allowed to change.
   {
     id: "e2e_setup_gear",
@@ -210,9 +252,19 @@ export const SETUPS = [
   },
 ] as const;
 
-export function setupUrl(setupId: string, tab?: string): string {
+/**
+ * `view` picks the centre pane (図 / ルーティング / 結線表 / JSON) and `selection`
+ * picks what the inspector shows — a node id, or `space:<id>`, or `setup`. Both
+ * live in the URL so a form post keeps them, which is the same reason the tabs
+ * used to.
+ */
+export function setupUrl(setupId: string, view?: string, selection?: string): string {
   const setup = SETUPS.find((entry) => entry.id === setupId);
   if (!setup) throw new Error(`unknown seeded setup: ${setupId}`);
   const base = `/events/${setup.eventId}/setups/${setup.id}`;
-  return tab ? `${base}?tab=${tab}` : base;
+  const params = new URLSearchParams();
+  if (view) params.set("view", view);
+  if (selection) params.set("sel", selection);
+  const query = params.toString();
+  return query ? `${base}?${query}` : base;
 }

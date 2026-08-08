@@ -371,7 +371,12 @@ function collectPlaces(graph: BuiltGraph): Map<string, Place> {
   return places;
 }
 
-function placeKeyOf(space: Space): string | null {
+/**
+ * Exported because the editor's tree groups by room too, and the two must agree
+ * on which spaces are one room — otherwise the tree splits a hall the picture
+ * draws as a single frame.
+ */
+export function placeKeyOf(space: Space): string | null {
   if (space.kind === "transport") return null;
   return `${PLACE_PREFIX}${space.venueKey ?? space.id}`;
 }

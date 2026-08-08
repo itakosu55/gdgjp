@@ -49,10 +49,25 @@ const BAND_LABEL: Record<string, string> = {
 export function SignalFlowDiagram({
   layout,
   alerts,
-}: Readonly<{ layout: Layout; alerts?: ReadonlySet<string> }>) {
+  highlight = null,
+  scale = 1,
+}: Readonly<{
+  layout: Layout;
+  alerts?: ReadonlySet<string>;
+  /**
+   * Graph edge ids to keep lit while everything else fades. Hovering a finding
+   * in the dock passes that one loop, which is how a picture holding several
+   * reported cycles can still show which one the row is talking about — the
+   * danger colour alone cannot, because every reported cycle wears it.
+   */
+  highlight?: ReadonlySet<string> | null;
+  /** Zoom. The picture scales; it never moves — the document has no coordinates. */
+  scale?: number;
+}>) {
   const [focus, setFocus] = useState<string | null>(null);
   const alerted = layout.edges.filter((edge) => isAlerted(edge, alerts));
   const quiet = layout.edges.filter((edge) => !isAlerted(edge, alerts));
+  const lit = litNodes(layout, highlight);
 
   // Boxes and cables interleave by depth rather than going down in two slabs.
   // A cable ending on an app has to cross the machine holding it, so painting
@@ -73,77 +88,114 @@ export function SignalFlowDiagram({
   }
 
   return (
-    <div className="overflow-x-auto">
-      <svg
-        role="img"
-        aria-label="信号フロー図"
-        viewBox={`0 0 ${layout.width} ${layout.height}`}
-        width={layout.width}
-        height={layout.height}
-        className="max-w-none text-foreground"
-      >
-        <title>信号フロー図</title>
-        <defs>
-          {/* Two markers rather than `context-stroke`, which browsers disagree about. */}
-          <marker
-            id="flow-arrow"
-            viewBox="0 0 8 8"
-            refX="7"
-            refY="4"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto-start-reverse"
-          >
-            <path d="M0,0 L8,4 L0,8 z" className="fill-muted-foreground" />
-          </marker>
-          <marker
-            id="flow-arrow-alert"
-            viewBox="0 0 8 8"
-            refX="7"
-            refY="4"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto-start-reverse"
-          >
-            <path d="M0,0 L8,4 L0,8 z" className="fill-destructive" />
-          </marker>
-        </defs>
+    <svg
+      role="img"
+      aria-label="信号フロー図"
+      viewBox={`0 0 ${layout.width} ${layout.height}`}
+      width={Math.round(layout.width * scale)}
+      height={Math.round(layout.height * scale)}
+      className="max-w-none text-foreground"
+    >
+      <title>信号フロー図</title>
+      <defs>
+        {/* Two markers rather than `context-stroke`, which browsers disagree about. */}
+        <marker
+          id="flow-arrow"
+          viewBox="0 0 8 8"
+          refX="7"
+          refY="4"
+          markerWidth="6"
+          markerHeight="6"
+          orient="auto-start-reverse"
+        >
+          <path d="M0,0 L8,4 L0,8 z" className="fill-muted-foreground" />
+        </marker>
+        <marker
+          id="flow-arrow-alert"
+          viewBox="0 0 8 8"
+          refX="7"
+          refY="4"
+          markerWidth="6"
+          markerHeight="6"
+          orient="auto-start-reverse"
+        >
+          <path d="M0,0 L8,4 L0,8 z" className="fill-destructive" />
+        </marker>
+      </defs>
 
-        {layout.bands.map((band) => (
-          <Band key={`${band.role}-${band.fromColumn}`} band={band} height={layout.height} />
-        ))}
+      {layout.bands.map((band) => (
+        <Band key={`${band.role}-${band.fromColumn}`} band={band} height={layout.height} />
+      ))}
 
-        {layout.frames.map((frame) => (
-          <Frame key={frame.key} frame={frame} />
-        ))}
+      {layout.frames.map((frame) => (
+        <Frame key={frame.key} frame={frame} />
+      ))}
 
-        {levels.map((level) => (
-          <g key={level}>
-            {quiet
-              .filter((edge) => reach(edge) === level)
-              .map((edge) => (
-                <Cable key={edge.id} edge={edge} dimmed={isDimmed(edge, focus)} alerted={false} />
-              ))}
-            {layout.nodes
-              .filter((node) => node.depth === level)
-              .map((node) => (
-                <Box
-                  key={node.key}
-                  node={node}
-                  onFocus={() => setFocus(node.key)}
-                  onBlur={() => setFocus(null)}
-                />
-              ))}
-          </g>
-        ))}
+      {levels.map((level) => (
+        <g key={level}>
+          {quiet
+            .filter((edge) => reach(edge) === level)
+            .map((edge) => (
+              <Cable
+                key={edge.id}
+                edge={edge}
+                dimmed={isDimmed(edge, focus) || isFaded(edge, highlight)}
+                alerted={false}
+              />
+            ))}
+          {layout.nodes
+            .filter((node) => node.depth === level)
+            .map((node) => (
+              <Box
+                key={node.key}
+                node={node}
+                faded={lit !== null && !lit.has(node.key)}
+                onFocus={() => setFocus(node.key)}
+                onBlur={() => setFocus(null)}
+              />
+            ))}
+        </g>
+      ))}
 
-        {/* Last, so what the linter reported is never buried under a halo or a box. */}
-        {alerted.map((edge) => (
-          <Cable key={edge.id} edge={edge} dimmed={isDimmed(edge, focus)} alerted={true} />
-        ))}
-      </svg>
-    </div>
+      {/* Last, so what the linter reported is never buried under a halo or a box. */}
+      {alerted.map((edge) => (
+        <Cable
+          key={edge.id}
+          edge={edge}
+          dimmed={isDimmed(edge, focus) || isFaded(edge, highlight)}
+          alerted={true}
+        />
+      ))}
+    </svg>
   );
+}
+
+/**
+ * Boxes to keep lit while one loop is highlighted.
+ *
+ * A machine stays lit when the app inside it is on the loop, and the other way
+ * round: the two are one object on screen, and fading half of it reads as a
+ * rendering fault rather than as emphasis.
+ */
+function litNodes(layout: Layout, highlight: ReadonlySet<string> | null): Set<string> | null {
+  if (highlight === null) return null;
+  const parentOf = new Map(layout.nodes.map((node) => [node.key, node.parentKey]));
+  const lit = new Set<string>();
+  const add = (key: string) => {
+    lit.add(key);
+    const parent = parentOf.get(key);
+    if (parent) lit.add(parent);
+  };
+  for (const edge of layout.edges) {
+    if (!edge.sourceIds.some((id) => highlight.has(id))) continue;
+    add(edge.from);
+    add(edge.to);
+  }
+  return lit;
+}
+
+function isFaded(edge: LayoutEdge, highlight: ReadonlySet<string> | null): boolean {
+  return highlight !== null && !edge.sourceIds.some((id) => highlight.has(id));
 }
 
 /**
@@ -250,10 +302,12 @@ function cableStroke(edge: LayoutEdge, alerted: boolean): string {
 
 function Box({
   node,
+  faded,
   onFocus,
   onBlur,
 }: {
   node: LayoutNode;
+  faded: boolean;
   onFocus: () => void;
   onBlur: () => void;
 }) {
@@ -265,6 +319,7 @@ function Box({
     <g
       data-node-key={node.key}
       data-parent-key={node.parentKey ?? undefined}
+      opacity={faded ? 0.35 : 1}
       onMouseEnter={onFocus}
       onMouseLeave={onBlur}
       onFocus={onFocus}
