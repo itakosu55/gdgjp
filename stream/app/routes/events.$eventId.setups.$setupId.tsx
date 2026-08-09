@@ -13,8 +13,9 @@ import { SignalFlowDiagram } from "~/components/signal-flow-diagram";
 import { requireUser } from "~/lib/auth-redirect.server";
 import { describeNode } from "~/lib/av/diagnostics";
 import { buildGraph } from "~/lib/av/graph";
-import { layoutGraph, placeKeyOf } from "~/lib/av/layout";
+import { layoutGraph } from "~/lib/av/layout";
 import { lint } from "~/lib/av/lint";
+import { placeKeyOf } from "~/lib/av/places";
 import type { PortRef, SetupDoc } from "~/lib/av/schema";
 import {
   getEvent,

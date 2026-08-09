@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Diagnostic } from "./diagnostics";
-import { laptopOnlyMeeting, satelliteRooms, testContext, twoJoinsInOneHall } from "./fixtures";
+import {
+  laptopOnlyMeeting,
+  satelliteRooms,
+  speakerphoneMeeting,
+  testContext,
+  twoJoinsInOneHall,
+} from "./fixtures";
 import { lint } from "./lint";
 import type { SetupDoc } from "./schema";
 
@@ -542,6 +548,92 @@ describe("unfinished wiring", () => {
     const found = lint(doc({ nodes: [{ id: "n_mixer", deviceId: "d_mixer" }] }), testContext());
 
     expect(ruleIds(found)).toContain("unreachable-device");
+  });
+});
+
+// Coupling is a property of the jack now, so "which room is this in?" is asked
+// of whatever has a jack facing one — and a device can have two facing opposite
+// ways (§11.2–11.4).
+describe("where a jack faces", () => {
+  it("asks a mic for its room the moment it is added", () => {
+    const found = lint(doc({ nodes: [{ id: "n_mic", deviceId: "d_mic1" }] }), testContext());
+    const finding = found.find((d) => d.ruleId === "space-unassigned");
+
+    expect(finding?.severity).toBe("warn");
+    expect(finding?.nodeIds).toEqual(["n_mic"]);
+  });
+
+  // What used to be `space-kind-mismatch` (error). The mic reaches no space
+  // either way, so it is the same hole and gets the same wording.
+  it("says the same thing about a mic in a place that only has a screen", () => {
+    const found = lint(
+      doc({
+        spaces: [SCREEN],
+        nodes: [{ id: "n_mic", deviceId: "d_mic1", spaceId: "sp_screen" }],
+      }),
+      testContext(),
+    );
+
+    expect(ruleIds(found)).toContain("space-unassigned");
+    expect(ruleIds(found)).not.toContain("space-kind-mismatch");
+  });
+
+  it("clears once the place has air as well as a screen", () => {
+    const found = lint(
+      doc({
+        spaces: [
+          { ...SCREEN, venueKey: "hall" },
+          { id: "sp_air", kind: "acoustic", label: "ホール", venueKey: "hall" },
+        ],
+        nodes: [{ id: "n_mic", deviceId: "d_mic1", spaceId: "sp_screen" }],
+      }),
+      testContext(),
+    );
+
+    expect(ruleIds(found)).not.toContain("space-unassigned");
+  });
+
+  // §11.6's price, and the answer to it. A jack that is incidental to the
+  // device — a speakerphone's two faces, later a laptop's built-in mic — costs
+  // nothing until someone plugs into it; then the missing room is a real hole,
+  // because that is the machine picking the room up (§9.1).
+  it("leaves a speakerphone alone until something is plugged into it", () => {
+    const found = lint(
+      doc({ nodes: [{ id: "n_phone", deviceId: "d_speakerphone" }] }),
+      testContext(),
+    );
+
+    expect(ruleIds(found)).not.toContain("space-unassigned");
+  });
+
+  it("asks for the room once the speakerphone is wired to a PC", () => {
+    const found = lint(
+      doc({
+        nodes: [
+          { id: "n_phone", deviceId: "d_speakerphone" },
+          { id: "n_pc", deviceId: "d_pc" },
+        ],
+        links: [{ id: "l1", from: ["n_phone", "usb_out"], to: ["n_pc", "usb_in"] }],
+      }),
+      testContext(),
+    );
+    const finding = found.find((d) => d.ruleId === "space-unassigned");
+
+    expect(finding?.nodeIds).toEqual(["n_phone"]);
+  });
+
+  it("charges a join nothing for a meeting nobody wrote down", () => {
+    const found = lint(laptopOnlyMeeting(), testContext());
+
+    expect(found.filter((d) => d.ruleId === "space-unassigned").map((d) => d.nodeIds[0])).toEqual(
+      [],
+    );
+  });
+
+  it("is satisfied by one speakerphone standing in the room", () => {
+    const found = lint(speakerphoneMeeting(), testContext());
+
+    expect(ruleIds(found)).not.toContain("space-unassigned");
   });
 });
 

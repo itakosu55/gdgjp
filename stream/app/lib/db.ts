@@ -45,6 +45,7 @@ type PortRow = {
   channels: number;
   phantom: string;
   bus_key: string | null;
+  couples: string | null;
   sort_order: number;
 };
 
@@ -53,7 +54,7 @@ type RouteRow = { model_id: string; in_port: string; bus: string };
 const MODEL_COLS = "id, maker, name, category, internal_routing, notes";
 const BUS_COLS = "id, model_id, key, label, kind, sort_order";
 const PORT_SELECT = `SELECT p.id, p.model_id, p.key, p.label, p.direction, p.signal, p.connector,
-         p.level, p.channels, p.phantom, p.sort_order, b.key AS bus_key
+         p.level, p.channels, p.phantom, p.couples, p.sort_order, b.key AS bus_key
   FROM device_model_ports p
   LEFT JOIN device_model_buses b ON b.id = p.bus_id`;
 const ROUTE_SELECT = `SELECT r.model_id, p.key AS in_port, b.key AS bus
@@ -76,6 +77,7 @@ function toPort(row: PortRow): DeviceModelPort {
     channels: row.channels,
     phantom: row.phantom as DeviceModelPort["phantom"],
     busKey: row.bus_key,
+    couples: row.couples as DeviceModelPort["couples"],
   };
 }
 
@@ -204,8 +206,8 @@ export async function createPort(db: D1Database, modelId: string, input: PortInp
   await db
     .prepare(
       `INSERT INTO device_model_ports
-       (id, model_id, key, label, direction, signal, connector, level, channels, phantom, bus_id, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+       (id, model_id, key, label, direction, signal, connector, level, channels, phantom, bus_id, couples, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM device_model_ports WHERE model_id = ?))`,
     )
     .bind(
@@ -220,6 +222,7 @@ export async function createPort(db: D1Database, modelId: string, input: PortInp
       input.channels,
       input.phantom,
       busId,
+      input.couples,
       modelId,
     )
     .run();

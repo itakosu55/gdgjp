@@ -1,6 +1,6 @@
 import type { BuiltGraph, EdgeKind, GraphEdge, ResolvedNode, VertexId } from "./graph";
 import { isPortWired, nodeLabel } from "./graph";
-import type { Space } from "./schema";
+import { placeKeyOf } from "./places";
 import type { DeviceCategory, Medium, PortDirection, SpaceKind } from "./types";
 
 /**
@@ -101,7 +101,7 @@ function roleOf(graph: BuiltGraph, resolved: ResolvedNode): NodeRole {
 function joinRole(graph: BuiltGraph, resolved: ResolvedNode): NodeRole {
   let wiredIn = false;
   let wiredOut = false;
-  for (const port of resolved.model.ports) {
+  for (const port of resolved.ports.values()) {
     // `isPortWired` counts only cables and device selections. Space edges sit
     // on both faces of every join in a meeting, so counting those would make
     // every join look like "both" and this would be a fixed role again.
@@ -221,7 +221,6 @@ export type LayoutOptions = {
 };
 
 const SPACE_PREFIX = "space:";
-const PLACE_PREFIX = "place:";
 
 const PADDING = 24;
 const BOX_WIDTH = 184;
@@ -371,16 +370,6 @@ function collectPlaces(graph: BuiltGraph): Map<string, Place> {
   return places;
 }
 
-/**
- * Exported because the editor's tree groups by room too, and the two must agree
- * on which spaces are one room — otherwise the tree splits a hall the picture
- * draws as a single frame.
- */
-export function placeKeyOf(space: Space): string | null {
-  if (space.kind === "transport") return null;
-  return `${PLACE_PREFIX}${space.venueKey ?? space.id}`;
-}
-
 function collectBoxes(graph: BuiltGraph, places: Map<string, Place>): Map<string, Box> {
   const boxes = new Map<string, Box>();
   const placeOfSpace = new Map<string, string>();
@@ -394,7 +383,7 @@ function collectBoxes(graph: BuiltGraph, places: Map<string, Place>): Map<string
   for (const resolved of graph.nodes.values()) {
     const ports: BoxPort[] = [];
     const nextIndex = { in: 0, out: 0 };
-    for (const port of resolved.model.ports) {
+    for (const port of resolved.ports.values()) {
       const index = nextIndex[port.direction]++;
       ports.push({
         key: port.key,

@@ -1,5 +1,5 @@
 import type { Diagnostic, Severity } from "~/lib/av/diagnostics";
-import { placeKeyOf } from "~/lib/av/layout";
+import { placeKeyOf } from "~/lib/av/places";
 import type { PortRef, SetupDoc, SetupNode, Space } from "~/lib/av/schema";
 import type { DeviceModel, SpaceKind } from "~/lib/av/types";
 
@@ -51,8 +51,12 @@ export function buildNodeInfo(
  *
  * A meeting is where a join is and a room is where everything else is, and the
  * two are never the alternative to one another. Offering both made "所在" read
- * as a free-form tag; the graph then quietly ignored the nonsense combinations
- * (`space-kind-mismatch`) instead of the form never asking.
+ * as a free-form tag, and the nonsense combinations were then something the
+ * graph had to report rather than something the form never asked.
+ *
+ * A room's several spaces are all offered: 所在 is a place, and each of the
+ * node's jacks finds the space of that place its own medium can reach (§11.4),
+ * so which of a hall's two spaces gets picked here does not change the graph.
  */
 export function spacesFor(doc: SetupDoc, model: DeviceModel | undefined): Space[] {
   const wantsMeeting = model?.category === "software_conferencing";

@@ -66,4 +66,33 @@ test("a conferencing app carries the ports a screen share needs", async ({ page 
   for (const key of ["mic_in", "spk_out", "share_audio_in", "share_video_in"]) {
     await expect(page.getByRole("cell", { name: key, exact: true })).toBeVisible();
   }
+
+  // Coupling is a property of the jack now, and the seeded catalog carries it:
+  // what a join sends is what its meeting hears, what it receives is the
+  // meeting talking back.
+  await expect(page.getByRole("row").filter({ hasText: "share_audio_in" })).toContainText(
+    "空間へ出す",
+  );
+  await expect(page.getByRole("row").filter({ hasText: "spk_out" })).toContainText("空間から拾う");
+});
+
+test("a jack can be told it faces the room even though it is an input", async ({ page }) => {
+  const name = `${E2E_PREFIX}スピーカーフォン`;
+  await page.goto("/models");
+
+  await page.locator("#name").fill(name);
+  await page.locator("#category").selectOption("audio_interface");
+  await page.getByRole("button", { name: "追加" }).click();
+  await expect(page.getByRole("heading", { name })).toBeVisible();
+
+  // No category can guess this one: an input that *emits* into the room is what
+  // a speakerphone's playback side is, and it is why coupling had to leave the
+  // category behind (§11.2).
+  await page.locator("#portKey").fill("usb_in");
+  await page.locator("#portLabel").fill("USB IN");
+  await page.locator("#direction").selectOption("in");
+  await page.locator("#couples").selectOption("to_space");
+  await page.getByRole("button", { name: "端子を追加" }).click();
+
+  await expect(page.getByRole("row").filter({ hasText: "usb_in" })).toContainText("空間へ出す");
 });

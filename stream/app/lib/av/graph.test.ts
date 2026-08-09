@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { testContext, twoJoinsInOneHall } from "./fixtures";
+import { speakerphoneMeeting, testContext, twoJoinsInOneHall } from "./fixtures";
 import {
   buildGraph,
   isHostAssignment,
@@ -16,9 +16,13 @@ function doc(partial: Partial<SetupDoc>): SetupDoc {
   return { schemaVersion: 1, spaces: [], nodes: [], links: [], routing: [], ...partial };
 }
 
-function build(partial: Partial<SetupDoc>) {
+function context() {
   const ctx = testContext();
-  return buildGraph(doc(partial), { devices: ctx.devices, models: ctx.models });
+  return { devices: ctx.devices, models: ctx.models };
+}
+
+function build(partial: Partial<SetupDoc>) {
+  return buildGraph(doc(partial), context());
 }
 
 function hasEdge(
@@ -96,17 +100,54 @@ describe("space coupling", () => {
     expect(graph.edges.filter((edge) => edge.kind === "space")).toHaveLength(0);
   });
 
-  it("records a mismatch when audio gear is assigned to a visual space", () => {
+  // The mismatch used to be an error of its own. It cannot be stated any more:
+  // a node names a place, and a jack finds the space of that place its own
+  // medium can reach — so a mic in a place with only a screen simply reaches
+  // nothing. `space-unassigned` is what reports the hole (§11.4).
+  it("couples nothing when the place has no space of the port's medium", () => {
     const graph = build({
       spaces: [{ id: "sp_screen", kind: "visual", label: "スクリーン" }],
       nodes: [{ id: "n_mic", deviceId: "d_mic1", spaceId: "sp_screen" }],
     });
 
-    expect(graph.issues).toContainEqual({
-      kind: "space-kind-mismatch",
-      nodeId: "n_mic",
-      spaceId: "sp_screen",
+    expect(graph.issues).toHaveLength(0);
+    expect(graph.edges.filter((edge) => edge.kind === "space")).toHaveLength(0);
+  });
+
+  // A node says where it *is*, one place, and each jack picks the space of that
+  // place it can reach. Naming a second location for the camera would be a lie
+  // about the room the mic is in.
+  it("sends the audio jack to the air and the video jack to the sightline", () => {
+    const graph = build({
+      spaces: [
+        { id: "sp_air", kind: "acoustic", label: "ホール", venueKey: "hall" },
+        { id: "sp_sight", kind: "visual", label: "ホール", venueKey: "hall" },
+      ],
+      nodes: [
+        { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_air" },
+        { id: "n_camera", deviceId: "d_camera", spaceId: "sp_air" },
+      ],
     });
+
+    expect(hasEdge(graph, spaceVertexId("sp_air"), portVertexId("n_mic", "out"), "space")).toBe(
+      true,
+    );
+    expect(
+      hasEdge(graph, spaceVertexId("sp_sight"), portVertexId("n_camera", "hdmi_out"), "space"),
+    ).toBe(true);
+  });
+
+  // §11.3: the commonest piece of conferencing gear there is, and until
+  // coupling lived on the port it had to be split into two nodes.
+  it("gives one speakerphone both faces of the room", () => {
+    const graph = buildGraph(speakerphoneMeeting(), context());
+
+    expect(
+      hasEdge(graph, spaceVertexId("sp_room"), portVertexId("n_phone", "usb_out"), "space"),
+    ).toBe(true);
+    expect(
+      hasEdge(graph, portVertexId("n_phone", "usb_in"), spaceVertexId("sp_room"), "space"),
+    ).toBe(true);
   });
 });
 

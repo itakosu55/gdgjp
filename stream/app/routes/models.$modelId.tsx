@@ -7,6 +7,8 @@ import {
   BUS_KIND_LABELS,
   CATEGORY_LABELS,
   CONNECTOR_LABELS,
+  COUPLES_LABELS,
+  COUPLES_SHORT_LABELS,
   INTERNAL_ROUTING_LABELS,
   LEVEL_LABELS,
   PHANTOM_LABELS,
@@ -16,6 +18,7 @@ import {
 import type {
   BusKind,
   ConnectorKind,
+  CouplingDirection,
   DeviceCategory,
   DeviceModel,
   DeviceModelPort,
@@ -23,6 +26,7 @@ import type {
   PhantomRole,
   SignalKind,
 } from "~/lib/av/types";
+import { defaultCoupling } from "~/lib/av/types";
 import {
   createBus,
   createPort,
@@ -93,6 +97,7 @@ export async function action(args: Route.ActionArgs) {
       const key = slug(form.get("portKey"));
       if (!key) return { error: "端子のキーは必須です。" };
       const direction = String(form.get("direction") ?? "in") as DeviceModelPort["direction"];
+      const model = await getModel(env.DB, modelId);
       await createPort(env.DB, modelId, {
         key,
         label: String(form.get("portLabel") ?? "").trim() || key.toUpperCase(),
@@ -104,6 +109,7 @@ export async function action(args: Route.ActionArgs) {
         phantom: String(form.get("phantom") ?? "none") as PhantomRole,
         // Only outputs belong to a bus; an input's routing is the matrix.
         busKey: direction === "out" ? emptyToNull(form.get("busKey")) : null,
+        couples: coupling(form.get("couples"), model?.category ?? "generic", direction),
       });
       return null;
     }
@@ -129,6 +135,25 @@ export async function action(args: Route.ActionArgs) {
 function emptyToNull(value: FormDataEntryValue | null): string | null {
   const text = String(value ?? "").trim();
   return text === "" ? null : text;
+}
+
+/**
+ * The category picks the jack's coupling unless the form overrides it.
+ *
+ * This is all `CATEGORY_COUPLING` decides now (§11.4): choosing 「マイク」 and
+ * adding an output should give it the room without anyone knowing the word
+ * `from_space`, while a laptop's built-in mic — an *input* that hears the room —
+ * has to be able to say so explicitly, because no category can guess it.
+ */
+function coupling(
+  value: FormDataEntryValue | null,
+  category: DeviceCategory,
+  direction: DeviceModelPort["direction"],
+): CouplingDirection | null {
+  const raw = String(value ?? "");
+  if (raw === "from_space" || raw === "to_space") return raw;
+  if (raw === "none") return null;
+  return defaultCoupling(category, direction);
 }
 
 function slug(value: FormDataEntryValue | null): string {
@@ -179,6 +204,7 @@ export default function ModelDetailPage({ loaderData, actionData }: Route.Compon
                       <th className="px-3 py-2">レベル</th>
                       <th className="px-3 py-2">+48V</th>
                       <th className="px-3 py-2">バス</th>
+                      <th className="px-3 py-2">空間</th>
                       <th className="px-3 py-2" />
                     </tr>
                   </thead>
@@ -195,6 +221,9 @@ export default function ModelDetailPage({ loaderData, actionData }: Route.Compon
                           {port.phantom === "none" ? "—" : PHANTOM_LABELS[port.phantom]}
                         </td>
                         <td className="px-3 py-2 font-mono text-xs">{port.busKey ?? "—"}</td>
+                        <td className="px-3 py-2">
+                          {port.couples ? COUPLES_SHORT_LABELS[port.couples] : "—"}
+                        </td>
                         <td className="px-3 py-2 text-right">
                           <Form method="post">
                             <input type="hidden" name="intent" value="delete-port" />
@@ -363,6 +392,21 @@ export default function ModelDetailPage({ loaderData, actionData }: Route.Compon
                       {bus.label}
                     </option>
                   ))}
+                </select>
+              </Field>
+              <Field
+                label="空間との結合"
+                htmlFor="couples"
+                hint="部屋の空気や視界に面した端子か。内蔵マイクは入力でも from_space"
+              >
+                <select id="couples" name="couples" className={selectClassName}>
+                  <option value="">種別から自動</option>
+                  {entries(COUPLES_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                  <option value="none">結合しない</option>
                 </select>
               </Field>
               <Field label="チャンネル数" htmlFor="channels">

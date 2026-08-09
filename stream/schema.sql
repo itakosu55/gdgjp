@@ -76,7 +76,8 @@ CREATE TABLE device_model_ports (
     CHECK (phantom IN ('provides', 'requires', 'damaged_by', 'none')),
   -- Output ports belong to a bus; input ports do not.
   bus_id    TEXT REFERENCES device_model_buses(id) ON DELETE SET NULL,
-  sort_order INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0, couples TEXT
+  CHECK (couples IS NULL OR couples IN ('from_space', 'to_space')),
   UNIQUE (model_id, key)
 );
 CREATE INDEX device_model_ports_model_idx ON device_model_ports (model_id);

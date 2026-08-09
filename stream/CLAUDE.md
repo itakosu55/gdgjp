@@ -107,10 +107,29 @@ audience rule rises above warn: a hall mic that is not in the hall speakers is c
 and a critical that correct wiring cannot clear breaks the fix-one-and-re-run loop. Sources are
 mics only until `origin` ports exist (design doc §12.5).
 
-**Creating the transport space is opt-in.** `spaceRequired: false` on the conferencing coupling
-keeps the commonest setup — one online speaker, far side not modelled — free of a
-`space-unassigned` warning, which is deliberate. The cost is that a two-join loop is only found
-once someone has made a meeting space and assigned both joins to it.
+**Space coupling belongs to the jack, not the category.** `DeviceModelPort.couples` is
+`from_space` / `to_space` / `null`; `CATEGORY_COUPLING` survives only as the default a new
+catalog port gets and as the warning policy below, and **the graph never reads it**. What
+couples to a room is the transducer, and a transducer is a port — a USB speakerphone is one unit
+with both faces, and a laptop is a mic and a speaker plus six jacks that are neither. The
+direction is stated rather than derived: a mic's OUT and a speaker's IN both face the room and
+point opposite ways (design doc §11.2).
+
+**所在 is a place; the jack picks the space.** `SetupNode.spaceId` still names one Space, and
+`spacesForPort` walks `space → placeKeyOf → the place's spaces → the one this port's medium can
+reach`. So a camera and a mic in the same hall need one 所在 between them, and which of the
+hall's two spaces the form happened to store does not change the graph. A meeting is not a
+place (`placeKeyOf` returns `null` for `transport`), so a join resolves to its transport space
+directly and no medium ever has two candidates.
+
+`space-kind-mismatch` is gone with it — a mic in a place that has only a screen now reaches no
+space, which is the same hole as leaving 所在 blank, so `space-unassigned` says it. When that
+warning fires is `spaceNeedOf(category)`: `always` for gear that *is* a transducer (mic, speaker,
+camera, display), `never` for a join, because a meeting nobody wrote down is a finished document
+(§9.3) — the cost being that a two-join loop is only found once someone makes the meeting space —
+and `when-wired` for everything else, the default. That last one is §11.6's price: a streaming PC
+whose built-in mic nobody selected must not be charged a warning, but the same jack assigned to a
+join is §9.1's accident and the missing room is then real.
 
 ## Data model
 
@@ -325,10 +344,10 @@ machine goes, because a Meet window several columns away from the laptop running
 being complained about. `joinRole` still derives the role (§9.7.1) and the role still tints the
 band and still decides the column for a join with no host.
 
-**A room contains what is in it.** `SetupNode.spaceId` means *where this node is*; for a category
-that couples to a space it is also what it couples to, and for a mixer or a PC the graph ignores
-it. `collectPlaces` groups spaces into places by `venueKey ?? id`, so a hall's acoustic and visual
-spaces are one room and one frame — the use `venueKey` was reserved for.
+**A room contains what is in it.** `SetupNode.spaceId` means *where this node is*, and the jacks
+that face a space find it from there. `placeKeyOf` (`av/places.ts` — the graph needs it too now)
+keys spaces into places by `venueKey ?? id`, so a hall's acoustic and visual spaces are one room
+and one frame — the use `venueKey` was reserved for.
 
 A room spans the whole chain, so it cannot be a box; it is a **horizontal lane**. `separateLanes`
 shifts each place's members as a rigid body onto its own band of rows. That is not cosmetic: a

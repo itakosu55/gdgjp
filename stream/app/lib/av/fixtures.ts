@@ -29,6 +29,7 @@ function port(spec: PortSpec): DeviceModelPort {
     channels: spec.channels ?? 1,
     phantom: spec.phantom ?? "none",
     busKey: spec.busKey ?? null,
+    couples: spec.couples ?? null,
   };
 }
 
@@ -46,15 +47,19 @@ function bus(key: string, kind: DeviceModelBus["kind"]): DeviceModelBus {
  * a one-way feed costs no extra data entry.
  */
 function joinPorts(): DeviceModelPort[] {
+  // What a join sends is what its meeting hears, so every input faces the
+  // transport space and every output is the meeting talking back.
+  const send = { couples: "to_space" } as const;
+  const receive = { couples: "from_space" } as const;
   return [
-    port({ key: "mic_in", direction: "in", signal: "audio_digital" }),
-    port({ key: "cam_video_in", direction: "in", signal: "video" }),
-    port({ key: "share_audio_in", direction: "in", signal: "audio_digital" }),
-    port({ key: "share_video_in", direction: "in", signal: "video" }),
-    port({ key: "spk_out", direction: "out", signal: "audio_digital" }),
-    port({ key: "cam_video_out", direction: "out", signal: "video" }),
-    port({ key: "share_audio_out", direction: "out", signal: "audio_digital" }),
-    port({ key: "share_video_out", direction: "out", signal: "video" }),
+    port({ key: "mic_in", direction: "in", signal: "audio_digital", ...send }),
+    port({ key: "cam_video_in", direction: "in", signal: "video", ...send }),
+    port({ key: "share_audio_in", direction: "in", signal: "audio_digital", ...send }),
+    port({ key: "share_video_in", direction: "in", signal: "video", ...send }),
+    port({ key: "spk_out", direction: "out", signal: "audio_digital", ...receive }),
+    port({ key: "cam_video_out", direction: "out", signal: "video", ...receive }),
+    port({ key: "share_audio_out", direction: "out", signal: "audio_digital", ...receive }),
+    port({ key: "share_video_out", direction: "out", signal: "video", ...receive }),
   ];
 }
 
@@ -91,6 +96,7 @@ export const MODELS: DeviceModel[] = [
         signal: "audio_analog",
         connector: "xlr",
         level: "mic",
+        couples: "from_space",
       }),
     ],
   }),
@@ -107,6 +113,7 @@ export const MODELS: DeviceModel[] = [
         connector: "xlr",
         level: "mic",
         phantom: "requires",
+        couples: "from_space",
       }),
     ],
   }),
@@ -165,7 +172,14 @@ export const MODELS: DeviceModel[] = [
     category: "speaker",
     internalRouting: "none",
     ports: [
-      port({ key: "in", direction: "in", signal: "audio_analog", connector: "trs", level: "line" }),
+      port({
+        key: "in",
+        direction: "in",
+        signal: "audio_analog",
+        connector: "trs",
+        level: "line",
+        couples: "to_space",
+      }),
     ],
   }),
   model({
@@ -235,21 +249,60 @@ export const MODELS: DeviceModel[] = [
     name: "PC 内蔵マイク",
     category: "mic",
     internalRouting: "none",
-    ports: [port({ key: "out", direction: "out", signal: "audio_analog" })],
+    ports: [port({ key: "out", direction: "out", signal: "audio_analog", couples: "from_space" })],
   }),
   model({
     id: "m_builtin_spk",
     name: "PC 内蔵スピーカー",
     category: "speaker",
     internalRouting: "none",
-    ports: [port({ key: "in", direction: "in", signal: "audio_analog" })],
+    ports: [port({ key: "in", direction: "in", signal: "audio_analog", couples: "to_space" })],
+  }),
+  /**
+   * One unit that is both a mic and a speaker — §11.3's case, and the commonest
+   * piece of conferencing gear there is. Until coupling lived on the port this
+   * could only be written as two nodes, because a category picks one side.
+   *
+   * The two faces read backwards from a standalone mic and speaker on purpose:
+   * what leaves the speakerphone over USB is the room, and what arrives over
+   * USB is what it will play into the room.
+   */
+  model({
+    id: "m_speakerphone",
+    name: "USB Speakerphone",
+    category: "audio_interface",
+    internalRouting: "none",
+    ports: [
+      port({
+        key: "usb_out",
+        direction: "out",
+        signal: "audio_digital",
+        connector: "usb_c",
+        couples: "from_space",
+      }),
+      port({
+        key: "usb_in",
+        direction: "in",
+        signal: "audio_digital",
+        connector: "usb_c",
+        couples: "to_space",
+      }),
+    ],
   }),
   model({
     id: "m_camera",
     name: "Camcorder",
     category: "camera",
     internalRouting: "none",
-    ports: [port({ key: "hdmi_out", direction: "out", signal: "video", connector: "hdmi" })],
+    ports: [
+      port({
+        key: "hdmi_out",
+        direction: "out",
+        signal: "video",
+        connector: "hdmi",
+        couples: "from_space",
+      }),
+    ],
   }),
   model({
     id: "m_capture",
@@ -266,7 +319,15 @@ export const MODELS: DeviceModel[] = [
     name: "Projector",
     category: "display",
     internalRouting: "none",
-    ports: [port({ key: "hdmi_in", direction: "in", signal: "video", connector: "hdmi" })],
+    ports: [
+      port({
+        key: "hdmi_in",
+        direction: "in",
+        signal: "video",
+        connector: "hdmi",
+        couples: "to_space",
+      }),
+    ],
   }),
   model({
     id: "m_house_pa",
@@ -313,6 +374,7 @@ export const DEVICES: Device[] = [
   { id: "d_laptop", modelId: "m_pc", name: "登壇者ノートPC" },
   { id: "d_builtin_mic", modelId: "m_builtin_mic", name: "ノートPC内蔵マイク" },
   { id: "d_builtin_spk", modelId: "m_builtin_spk", name: "ノートPC内蔵スピーカー" },
+  { id: "d_speakerphone", modelId: "m_speakerphone", name: "USBスピーカーフォン" },
   { id: "d_obs", modelId: "m_obs", name: "OBS" },
   // Software is referenced by `modelId` now. This row stays so one test still
   // proves a `deviceId`-referencing software node keeps resolving.
@@ -459,6 +521,37 @@ export function laptopOnlyMeeting(): SetupDoc {
       { id: "l2", from: ["n_laptop", "headphone_out"], to: ["n_laptop_spk", "in"] },
       { id: "l3", from: ["n_laptop_mic", "out"], to: ["n_laptop", "line_in"] },
       { id: "l4", from: ["n_laptop", "line_in"], to: ["n_join", "mic_in"] },
+    ],
+    routing: [],
+  };
+}
+
+/**
+ * A meeting room joined by one USB speakerphone — §11.3's headline case.
+ *
+ * One physical unit is both faces of the room: what leaves it over USB is the
+ * room's sound, what arrives over USB it plays back into the room. Before
+ * coupling moved onto the port this had to be split into a mic node and a
+ * speaker node that no one could unplug from each other, and the ledger then
+ * held two rows for a thing you carry in one hand (§11.7).
+ */
+export function speakerphoneMeeting(): SetupDoc {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      { id: "sp_room", kind: "acoustic", label: "会議室" },
+      { id: "sp_mtg", kind: "transport", label: "定例 Meet", meetingKey: "meet-weekly" },
+    ],
+    nodes: [
+      { id: "n_phone", deviceId: "d_speakerphone", spaceId: "sp_room" },
+      { id: "n_pc", deviceId: "d_pc", spaceId: "sp_room" },
+      { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+    ],
+    links: [
+      { id: "l1", from: ["n_phone", "usb_out"], to: ["n_pc", "usb_in"] },
+      { id: "l2", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
+      { id: "l3", from: ["n_join", "spk_out"], to: ["n_pc", "usb_out"] },
+      { id: "l4", from: ["n_pc", "usb_out"], to: ["n_phone", "usb_in"] },
     ],
     routing: [],
   };

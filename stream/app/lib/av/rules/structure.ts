@@ -1,6 +1,6 @@
 import type { Diagnostic, Rule } from "../diagnostics";
 import { isPortWired, nodeLabel } from "../graph";
-import { CATEGORY_SPACE_COUPLING } from "../types";
+import { spaceNeedOf } from "../types";
 
 const UNKNOWN_REFERENCE = "unknown-reference";
 
@@ -56,16 +56,6 @@ export const structureRules: Rule = (graph, ctx) => {
           message: `ホストに指定された PC が構成にありません (${issue.hostNodeId})。`,
           nodeIds: [issue.nodeId],
           linkIds: [],
-        });
-        break;
-      case "space-kind-mismatch":
-        diagnostics.push({
-          ruleId: "space-kind-mismatch",
-          severity: "error",
-          message: "音響機材と視覚空間、あるいはその逆の組み合わせで割り当てられています。",
-          nodeIds: [issue.nodeId],
-          linkIds: [],
-          spaceIds: [issue.spaceId],
         });
         break;
       case "unknown-link-node":
@@ -152,14 +142,34 @@ export const structureRules: Rule = (graph, ctx) => {
     }
   }
 
+  // A jack that faces a space but reaches none.
+  //
+  // Since coupling moved onto the port (§11.4) this one warning covers what
+  // used to be two: 所在 left blank, and 所在 pointing at a room that has no
+  // space of this jack's medium — a mic in a place that only has a screen.
+  // Both end the same way, with no space edge and howling undetectable, so the
+  // old `space-kind-mismatch` error is not expressible any more and does not
+  // need to be.
+  const coupledNodes = new Set<string>();
+  for (const edge of graph.edges) {
+    if (edge.kind === "space" && edge.nodeId) coupledNodes.add(edge.nodeId);
+  }
+
   for (const resolved of graph.nodes.values()) {
-    const coupling = CATEGORY_SPACE_COUPLING[resolved.model.category];
-    if (!coupling) continue;
-    // A join with no meeting is the ordinary case — one online speaker, far
-    // side not modelled — so it must not cost the commonest setup a warning.
-    if (!coupling.spaceRequired) continue;
     if (resolved.node.coupling === "isolated") continue;
-    if (resolved.node.spaceId) continue;
+    if (coupledNodes.has(resolved.id)) continue;
+    // A 所在 naming a space that does not exist is already an error above, and
+    // saying it a second way would only bury it.
+    if (resolved.node.spaceId && !graph.spaces.has(resolved.node.spaceId)) continue;
+
+    const facing = [...resolved.ports.values()].filter((port) => port.couples !== null);
+    if (facing.length === 0) continue;
+    const need = spaceNeedOf(resolved.model.category);
+    if (need === "never") continue;
+    if (need === "when-wired" && !facing.some((port) => isPortWired(graph, resolved.id, port))) {
+      continue;
+    }
+
     diagnostics.push({
       ruleId: "space-unassigned",
       severity: "warn",
@@ -220,7 +230,8 @@ export const structureRules: Rule = (graph, ctx) => {
     if (!hostId) continue;
     const host = graph.nodes.get(hostId);
     if (!host) continue;
-    if (resolved.model.ports.some((port) => isPortWired(graph, resolved.id, port))) continue;
+    if ([...resolved.ports.values()].some((port) => isPortWired(graph, resolved.id, port)))
+      continue;
     diagnostics.push({
       ruleId: "software-io-unassigned",
       severity: "info",
@@ -232,7 +243,7 @@ export const structureRules: Rule = (graph, ctx) => {
 
   for (const resolved of graph.nodes.values()) {
     if (!ENDPOINT_CATEGORIES.has(resolved.model.category)) continue;
-    const unconnected = resolved.model.ports.filter(
+    const unconnected = [...resolved.ports.values()].filter(
       (port) => !isPortWired(graph, resolved.id, port),
     );
     if (unconnected.length === 0) continue;

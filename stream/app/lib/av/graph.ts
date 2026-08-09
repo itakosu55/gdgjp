@@ -1,6 +1,14 @@
+import { placeKeyOf } from "./places";
 import type { PortRef, SetupDoc, SetupLink, SetupNode, Space } from "./schema";
-import type { Device, DeviceModel, DeviceModelPort, Medium, PortDirection } from "./types";
-import { CATEGORY_SPACE_COUPLING, SPACE_MEDIA, portMedia } from "./types";
+import type {
+  CouplingDirection,
+  Device,
+  DeviceModel,
+  DeviceModelPort,
+  Medium,
+  PortDirection,
+} from "./types";
+import { SPACE_MEDIA, portMedia } from "./types";
 
 /**
  * Turns a setup document plus the device catalog into a directed graph.
@@ -85,7 +93,6 @@ export type ResolutionIssue =
   | { kind: "no-device-reference"; nodeId: string }
   | { kind: "unknown-space"; nodeId: string; spaceId: string }
   | { kind: "unknown-host"; nodeId: string; hostNodeId: string }
-  | { kind: "space-kind-mismatch"; nodeId: string; spaceId: string }
   | { kind: "unknown-link-node"; linkId: string; nodeId: string }
   | { kind: "unknown-link-port"; linkId: string; nodeId: string; portKey: string }
   | { kind: "bad-link-direction"; linkId: string }
@@ -147,10 +154,9 @@ export function buildGraph(doc: SetupDoc, catalog: CatalogLookup): BuiltGraph {
     }
   }
 
-  // Which nodes actually couple to which space has to be known before the
-  // vertices exist, because a transport space has one vertex per join. Sharing
-  // one pass also keeps `space-kind-mismatch` from being reported twice.
-  const members = collectSpaceMembers(nodes, spaces, issues);
+  // Which jacks actually couple to which space has to be known before the
+  // vertices exist, because a transport space has one vertex per join.
+  const members = collectSpaceMembers(nodes, spaces);
 
   const vertices = new Map<VertexId, Vertex>();
   for (const space of spaces.values()) {
@@ -159,19 +165,19 @@ export function buildGraph(doc: SetupDoc, catalog: CatalogLookup): BuiltGraph {
       vertices.set(id, { id, type: "space", spaceId: space.id, kind: space.kind });
       continue;
     }
-    for (const join of members.get(space.id) ?? []) {
-      const id = transportVertexId(space.id, join.id);
+    for (const joinId of members.get(space.id)?.keys() ?? []) {
+      const id = transportVertexId(space.id, joinId);
       vertices.set(id, {
         id,
         type: "space",
         spaceId: space.id,
         kind: "transport",
-        sourceNodeId: join.id,
+        sourceNodeId: joinId,
       });
     }
   }
   for (const resolved of nodes.values()) {
-    for (const port of resolved.model.ports) {
+    for (const port of resolved.ports.values()) {
       const id = portVertexId(resolved.id, port.key);
       vertices.set(id, { id, type: "port", nodeId: resolved.id, portKey: port.key, port });
     }
@@ -353,7 +359,7 @@ function buildInternalEdges(
           issues.push({ kind: "unknown-route-bus", nodeId: resolved.id, busKey: route.bus });
           continue;
         }
-        for (const outPort of model.ports) {
+        for (const outPort of resolved.ports.values()) {
           if (outPort.direction !== "out" || outPort.busKey !== route.bus) continue;
           const media = sharedMedia(portMedia(inPort.signal), portMedia(outPort.signal));
           if (media.length === 0) continue;
@@ -372,9 +378,9 @@ function buildInternalEdges(
     }
 
     if (model.internalRouting === "passthrough") {
-      for (const inPort of model.ports) {
+      for (const inPort of resolved.ports.values()) {
         if (inPort.direction !== "in") continue;
-        for (const outPort of model.ports) {
+        for (const outPort of resolved.ports.values()) {
           if (outPort.direction !== "out") continue;
           const media = sharedMedia(portMedia(inPort.signal), portMedia(outPort.signal));
           if (media.length === 0) continue;
@@ -394,81 +400,128 @@ function buildInternalEdges(
   return edges;
 }
 
-/** The nodes that actually couple to each space, keyed by space id. */
-type SpaceMembers = Map<string, ResolvedNode[]>;
+/** One jack facing one space, and the media it can actually carry there. */
+type PortCoupling = {
+  port: DeviceModelPort;
+  direction: CouplingDirection;
+  media: Medium[];
+};
+
+/**
+ * The couplings of each space, keyed space id → node id → jacks.
+ *
+ * Nested rather than flat because a transport space needs both: the jacks, to
+ * draw the edges, and the *set of nodes*, because everyone else's send is what
+ * arrives at a join.
+ */
+type SpaceMembers = Map<string, Map<string, PortCoupling[]>>;
+
+/**
+ * Which space a jack faces, given the node's 所在.
+ *
+ * A node names one place, not one space (§11.4). A meeting is not a place, so a
+ * join resolves to its transport space directly; everything else resolves
+ * through the place, where the port's own medium picks the space — audio finds
+ * the air, video finds the sightline. That is what lets one all-in-one terminal
+ * be a screen and a mic at once without the document naming two locations.
+ */
+function spacesForPort(
+  node: SetupNode,
+  port: DeviceModelPort,
+  spaces: Map<string, Space>,
+  byPlace: Map<string, Space[]>,
+): { space: Space; media: Medium[] }[] {
+  if (!node.spaceId) return [];
+  const home = spaces.get(node.spaceId);
+  if (!home) return [];
+
+  const media = portMedia(port.signal);
+  const candidates =
+    home.kind === "transport" ? [home] : (byPlace.get(placeKeyOf(home) ?? "") ?? []);
+
+  const found: { space: Space; media: Medium[] }[] = [];
+  for (const space of candidates) {
+    const shared = sharedMedia(media, SPACE_MEDIA[space.kind]);
+    if (shared.length > 0) found.push({ space, media: shared });
+  }
+  return found;
+}
 
 function collectSpaceMembers(
   nodes: Map<string, ResolvedNode>,
   spaces: Map<string, Space>,
-  issues: ResolutionIssue[],
 ): SpaceMembers {
-  const members: SpaceMembers = new Map();
+  const byPlace = new Map<string, Space[]>();
+  for (const space of spaces.values()) {
+    const key = placeKeyOf(space);
+    if (!key) continue;
+    const list = byPlace.get(key);
+    if (list) list.push(space);
+    else byPlace.set(key, [space]);
+  }
 
+  const members: SpaceMembers = new Map();
   for (const resolved of nodes.values()) {
-    const coupling = CATEGORY_SPACE_COUPLING[resolved.model.category];
-    if (!coupling) continue;
     if (resolved.node.coupling === "isolated") continue;
 
-    const spaceId = resolved.node.spaceId;
-    if (!spaceId) continue;
-    const space = spaces.get(spaceId);
-    if (!space) continue;
-    if (space.kind !== coupling.spaceKind) {
-      issues.push({ kind: "space-kind-mismatch", nodeId: resolved.id, spaceId });
-      continue;
+    for (const port of resolved.ports.values()) {
+      if (!port.couples) continue;
+      for (const { space, media } of spacesForPort(resolved.node, port, spaces, byPlace)) {
+        let byNode = members.get(space.id);
+        if (!byNode) {
+          byNode = new Map();
+          members.set(space.id, byNode);
+        }
+        const list = byNode.get(resolved.id);
+        const coupling: PortCoupling = { port, direction: port.couples, media };
+        if (list) list.push(coupling);
+        else byNode.set(resolved.id, [coupling]);
+      }
     }
-
-    const list = members.get(spaceId);
-    if (list) list.push(resolved);
-    else members.set(spaceId, [resolved]);
   }
 
   return members;
 }
 
+/**
+ * `to_space` before `from_space` per node, so a join's send is laid down before
+ * what it receives. The order is only cosmetic to the search, but it is what
+ * the existing cycle expectations were written against.
+ */
+const COUPLING_ORDER: readonly CouplingDirection[] = ["to_space", "from_space"];
+
 function buildSpaceEdges(members: SpaceMembers, spaces: Map<string, Space>): GraphEdge[] {
   const edges: GraphEdge[] = [];
 
-  for (const [spaceId, coupled] of members) {
+  for (const [spaceId, byNode] of members) {
     const space = spaces.get(spaceId);
     if (!space) continue;
-    // Air carries sound and sight carries pictures, but a meeting carries both,
-    // so the medium comes from the port narrowed by the space rather than from
-    // the space alone.
-    const spaceMedia = SPACE_MEDIA[space.kind];
 
-    for (const resolved of coupled) {
-      const coupling = CATEGORY_SPACE_COUPLING[resolved.model.category];
-      if (!coupling) continue;
-
-      for (const direction of coupling.directions) {
-        const wanted: PortDirection = direction === "from_space" ? "out" : "in";
-
-        for (const port of resolved.model.ports) {
-          if (port.direction !== wanted) continue;
-          const media = sharedMedia(portMedia(port.signal), spaceMedia);
-          if (media.length === 0) continue;
-          const portVertex = portVertexId(resolved.id, port.key);
+    for (const [nodeId, couplings] of byNode) {
+      for (const direction of COUPLING_ORDER) {
+        for (const { port, media } of couplings) {
+          if (port.couples !== direction) continue;
+          const portVertex = portVertexId(nodeId, port.key);
 
           if (space.kind !== "transport") {
             edges.push(
               direction === "from_space"
                 ? {
-                    id: `space:${spaceId}:${resolved.id}:${port.key}`,
+                    id: `space:${spaceId}:${nodeId}:${port.key}`,
                     from: spaceVertexId(spaceId),
                     to: portVertex,
                     kind: "space",
                     media,
-                    nodeId: resolved.id,
+                    nodeId,
                     spaceId,
                   }
                 : {
-                    id: `space:${resolved.id}:${port.key}:${spaceId}`,
+                    id: `space:${nodeId}:${port.key}:${spaceId}`,
                     from: portVertex,
                     to: spaceVertexId(spaceId),
                     kind: "space",
                     media,
-                    nodeId: resolved.id,
+                    nodeId,
                     spaceId,
                   },
             );
@@ -478,12 +531,12 @@ function buildSpaceEdges(members: SpaceMembers, spaces: Map<string, Space>): Gra
           if (direction === "to_space") {
             // Into the meeting, tagged with who sent it.
             edges.push({
-              id: `space:${resolved.id}:${port.key}:${spaceId}`,
+              id: `space:${nodeId}:${port.key}:${spaceId}`,
               from: portVertex,
-              to: transportVertexId(spaceId, resolved.id),
+              to: transportVertexId(spaceId, nodeId),
               kind: "space",
               media,
-              nodeId: resolved.id,
+              nodeId,
               spaceId,
             });
             continue;
@@ -491,15 +544,15 @@ function buildSpaceEdges(members: SpaceMembers, spaces: Map<string, Space>): Gra
 
           // Out of the meeting: everyone *else*'s send arrives here. The
           // missing self-edge is the bridge's own Mix-Minus.
-          for (const other of coupled) {
-            if (other.id === resolved.id) continue;
+          for (const otherId of byNode.keys()) {
+            if (otherId === nodeId) continue;
             edges.push({
-              id: `space:${spaceId}:from:${other.id}:${resolved.id}:${port.key}`,
-              from: transportVertexId(spaceId, other.id),
+              id: `space:${spaceId}:from:${otherId}:${nodeId}:${port.key}`,
+              from: transportVertexId(spaceId, otherId),
               to: portVertex,
               kind: "space",
               media,
-              nodeId: resolved.id,
+              nodeId,
               spaceId,
             });
           }
@@ -552,7 +605,7 @@ export function portVertices(
   direction: "in" | "out",
   medium: Medium,
 ): VertexId[] {
-  return resolved.model.ports
+  return [...resolved.ports.values()]
     .filter((port) => port.direction === direction && portMedia(port.signal).includes(medium))
     .map((port) => portVertexId(resolved.id, port.key));
 }

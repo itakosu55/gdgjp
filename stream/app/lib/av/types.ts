@@ -79,6 +79,18 @@ export type DeviceModelPort = {
   phantom: PhantomRole;
   /** Output ports belong to a bus; input ports carry `null`. */
   busKey: string | null;
+  /**
+   * Which face of a space this jack is, or `null` for one that touches no
+   * space.
+   *
+   * What couples to a room is not the device but the transducer, and a
+   * transducer is a port: a laptop is a mic *and* a speaker *and* six jacks
+   * that are neither, and a USB speakerphone is one unit with both faces. The
+   * direction cannot be derived — a mic's OUT and a speaker's IN are both "the
+   * jack facing the room" and point opposite ways — so it is stated. See
+   * docs/260805_stream_av_designer.md §11.
+   */
+  couples: CouplingDirection | null;
 };
 
 export type DeviceModel = {
@@ -140,36 +152,72 @@ export type SpaceKind = (typeof SPACE_KINDS)[number];
  */
 export type CouplingDirection = "from_space" | "to_space";
 
-export type SpaceCoupling = {
-  spaceKind: SpaceKind;
-  /** A join both sends into its meeting and receives from it, so it has two. */
-  directions: readonly CouplingDirection[];
+/**
+ * When leaving 所在 blank is worth a warning.
+ *
+ * - `always` — the device *is* a transducer, so not knowing its room makes
+ *   howling undetectable from the moment it is added.
+ * - `when-wired` — the transducer is incidental to the device: a laptop's
+ *   built-in mic, a USB speakerphone's two faces. Charging every streaming PC a
+ *   warning for a jack nobody selected is what §9.3 forbids, but once something
+ *   is plugged into that jack the missing room is a real hole — that is §9.1's
+ *   accident, the presenter's own machine picking the room up.
+ * - `never` — a meeting nobody wrote down is an ordinary, finished document.
+ *   One online speaker with the far side unmodelled is the commonest setup
+ *   there is.
+ *
+ * This is §11.6's open question ("`spaceRequired` 相当の逃げ道をポート側に持たせるかは
+ * 実装時に決める") answered: the escape stays on the category, because what
+ * differs is not the jack but whether being this kind of device is itself the
+ * reason to know the room.
+ */
+export type SpaceNeed = "always" | "when-wired" | "never";
+
+export type CategoryCoupling = {
   /**
-   * Whether leaving the space blank is worth a warning.
-   *
-   * A mic with no room makes howling undetectable, so it is. A join with no
-   * meeting is the ordinary case — one online speaker, far side not modelled —
-   * and charging the commonest setup extra data entry for nothing is exactly
-   * what §9.3 forbids.
+   * What a new port of this direction couples to when the catalog does not
+   * say. Choosing 「マイク」 in the catalog should fill the jack in for you;
+   * that is all the category decides now.
    */
-  spaceRequired: boolean;
+  defaults: Partial<Record<PortDirection, CouplingDirection>>;
+  spaceNeed: SpaceNeed;
 };
 
 /**
- * The implicit edges that make howling and the infinite-mirror detectable.
- * Headphones and in-ear monitors are deliberately absent: they never couple.
+ * The category's opinion about space coupling — a default and a warning
+ * policy, and nothing the graph reads.
+ *
+ * Coupling itself moved onto the port (§11.2). Headphones and in-ear monitors
+ * are still deliberately absent: they never couple, so a new headphone model's
+ * jacks start uncoupled.
  */
-export const CATEGORY_SPACE_COUPLING: Partial<Record<DeviceCategory, SpaceCoupling>> = {
-  mic: { spaceKind: "acoustic", directions: ["from_space"], spaceRequired: true },
-  speaker: { spaceKind: "acoustic", directions: ["to_space"], spaceRequired: true },
-  camera: { spaceKind: "visual", directions: ["from_space"], spaceRequired: true },
-  display: { spaceKind: "visual", directions: ["to_space"], spaceRequired: true },
+export const CATEGORY_COUPLING: Partial<Record<DeviceCategory, CategoryCoupling>> = {
+  mic: { defaults: { out: "from_space" }, spaceNeed: "always" },
+  speaker: { defaults: { in: "to_space" }, spaceNeed: "always" },
+  camera: { defaults: { out: "from_space" }, spaceNeed: "always" },
+  display: { defaults: { in: "to_space" }, spaceNeed: "always" },
   software_conferencing: {
-    spaceKind: "transport",
-    directions: ["to_space", "from_space"],
-    spaceRequired: false,
+    defaults: { in: "to_space", out: "from_space" },
+    spaceNeed: "never",
   },
 };
+
+/**
+ * `when-wired` is the default because a coupling port on a category that is not
+ * wholly a transducer — a computer, an audio interface — is exactly the case
+ * §11.6 called the heaviest price of moving coupling onto ports.
+ */
+export function spaceNeedOf(category: DeviceCategory): SpaceNeed {
+  return CATEGORY_COUPLING[category]?.spaceNeed ?? "when-wired";
+}
+
+/** The coupling a new catalog port gets when the form leaves it on 自動. */
+export function defaultCoupling(
+  category: DeviceCategory,
+  direction: PortDirection,
+): CouplingDirection | null {
+  return CATEGORY_COUPLING[category]?.defaults[direction] ?? null;
+}
 
 /**
  * What a space can carry. Air carries sound and sight carries pictures, but a

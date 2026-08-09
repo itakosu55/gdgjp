@@ -1,5 +1,6 @@
 import type {
   ConnectorKind,
+  CouplingDirection,
   DeviceCategory,
   InternalRouting,
   LevelKind,
@@ -103,6 +104,21 @@ export const SPACE_MEDIUM_LABELS: Record<SpaceKind, string> = {
   acoustic: "空気",
   visual: "視界",
   transport: "ミーティング",
+};
+
+/**
+ * A jack's own relationship with the room, which is not its direction: a mic's
+ * OUT and a speaker's IN both face the room and point opposite ways.
+ */
+export const COUPLES_LABELS: Record<CouplingDirection, string> = {
+  from_space: "from_space — 空間から拾う (マイク・カメラ)",
+  to_space: "to_space — 空間へ出す (スピーカー・ディスプレイ)",
+};
+
+/** For the ports table, where the parenthetical would not fit. */
+export const COUPLES_SHORT_LABELS: Record<CouplingDirection, string> = {
+  from_space: "空間から拾う",
+  to_space: "空間へ出す",
 };
 
 export const COUPLING_LABELS = {
