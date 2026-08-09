@@ -96,3 +96,23 @@ test("a jack can be told it faces the room even though it is an input", async ({
 
   await expect(page.getByRole("row").filter({ hasText: "usb_in" })).toContainText("空間へ出す");
 });
+
+test("a broadcast app declares kinds of source, not a fixed pair of inputs", async ({ page }) => {
+  await page.goto("/models");
+  await page.getByRole("link", { name: /OBS Studio/ }).click();
+
+  // 音声ソース is a template: OBS's mixer has one strip per source and the
+  // sources are chosen on the day, so the count belongs to the setup (§12.3).
+  await expect(page.getByRole("row").filter({ hasText: "audio_src" })).toContainText(
+    "構成で増やせる",
+  );
+  // A browser source is a picture and a sound — two ports named as one thing,
+  // so "the video is on the stream but its audio is not" stays expressible.
+  await expect(page.getByRole("row").filter({ hasText: "browser_audio" })).toContainText(
+    "対: browser",
+  );
+  // The outputs are still ordinary jacks.
+  await expect(page.getByRole("row").filter({ hasText: "monitor_out" })).not.toContainText(
+    "構成で増やせる",
+  );
+});

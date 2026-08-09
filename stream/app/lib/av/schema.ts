@@ -40,6 +40,31 @@ export const spaceSchema = z.object({
   meetingKey: z.string().min(1).max(64).optional(),
 });
 
+/**
+ * One instance of an expandable port template — one row of the mixer.
+ *
+ * The model says *what kinds* of source exist; this says how many there are and
+ * what each one is. Everything else (direction, signal, connector, couples,
+ * origin) is inherited, so the catalog stays the authority on what an OBS is and
+ * nothing can invent a jack the model does not declare (§3.1, §12.3).
+ */
+export const nodePortSchema = z.object({
+  /**
+   * `<template>:<n>`, referenced from `links` and `routing`. Never renumbered
+   * when a source is deleted: renumbering means rewriting both of those in the
+   * same breath, and the document is a single JSON column (§12.8).
+   */
+  key: z.string().min(1).max(64),
+  /** The expandable port of the model this is an instance of. */
+  template: z.string().min(1).max(64),
+  label: z.string().min(1).max(120).optional(),
+  /**
+   * The halves of one source share this: a browser source's picture and its
+   * sound are two ports and one thing (§12.4).
+   */
+  sourceId: z.string().min(1).max(64).optional(),
+});
+
 export const setupNodeSchema = z
   .object({
     id,
@@ -82,12 +107,24 @@ export const setupNodeSchema = z
      * a person can really perform, so the mute has to be per jack.
      */
     isolatedPorts: z.array(z.string().min(1).max(64)).optional(),
+    /**
+     * The sources this node has, for a model whose port count is a property of
+     * the setup rather than the model — a broadcast app (§12.3).
+     */
+    ports: z.array(nodePortSchema).optional(),
     /** Set on software nodes (OBS, Meet) to the computer node they run on. */
     hostNodeId: id.optional(),
   })
   .refine((node) => Boolean(node.deviceId) !== Boolean(node.modelId), {
     message: "deviceId か modelId のいずれか一方が必要です",
-  });
+  })
+  // Two instances under one key would collapse into one vertex and silently
+  // merge two sources' routing, the same way a duplicate node id would.
+  .refine(
+    (node) =>
+      new Set((node.ports ?? []).map((port) => port.key)).size === (node.ports ?? []).length,
+    { message: "ソースのキーが重複しています" },
+  );
 
 /** `[nodeId, portKey]`. */
 export const portRefSchema = z.tuple([id, z.string().min(1).max(64)]);
@@ -142,6 +179,7 @@ export const setupDocSchema = z
   });
 
 export type Space = z.infer<typeof spaceSchema>;
+export type NodePort = z.infer<typeof nodePortSchema>;
 export type SetupNode = z.infer<typeof setupNodeSchema>;
 export type PortRef = z.infer<typeof portRefSchema>;
 export type SetupLink = z.infer<typeof linkSchema>;

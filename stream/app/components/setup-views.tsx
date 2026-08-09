@@ -38,7 +38,7 @@ export function CablesView({
 
   const portOptions = (filter: (port: DeviceModel["ports"][number]) => boolean) =>
     nodeInfo.flatMap((info) =>
-      (info.model?.ports ?? []).filter(filter).map((port) => ({
+      info.ports.filter(filter).map((port) => ({
         value: `${info.node.id}::${port.key}`,
         label: `${info.label} / ${port.label}`,
       })),
@@ -48,7 +48,7 @@ export function CablesView({
 
   const hosted = nodeInfo.filter((info) => info.node.hostNodeId);
   const appPorts = hosted.flatMap((info) =>
-    (info.model?.ports ?? []).map((port) => ({
+    info.ports.map((port) => ({
       value: `${info.node.id}::${port.key}`,
       label: `${info.label} / ${port.label} (${port.direction === "out" ? "出力" : "入力"})`,
     })),
@@ -58,7 +58,7 @@ export function CablesView({
     .filter((info) => hostIds.has(info.node.id))
     .map((info) => ({
       label: info.label,
-      ports: (info.model?.ports ?? []).map((port) => ({
+      ports: info.ports.map((port) => ({
         value: `${info.node.id}::${port.key}`,
         label: `${port.label} (${port.direction === "out" ? "出力" : "入力"})`,
       })),

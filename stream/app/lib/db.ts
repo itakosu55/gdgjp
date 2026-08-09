@@ -46,6 +46,9 @@ type PortRow = {
   phantom: string;
   bus_key: string | null;
   couples: string | null;
+  expandable: number;
+  source_key: string | null;
+  origin: number;
   sort_order: number;
 };
 
@@ -54,7 +57,8 @@ type RouteRow = { model_id: string; in_port: string; bus: string };
 const MODEL_COLS = "id, maker, name, category, internal_routing, notes";
 const BUS_COLS = "id, model_id, key, label, kind, sort_order";
 const PORT_SELECT = `SELECT p.id, p.model_id, p.key, p.label, p.direction, p.signal, p.connector,
-         p.level, p.channels, p.phantom, p.couples, p.sort_order, b.key AS bus_key
+         p.level, p.channels, p.phantom, p.couples, p.expandable, p.source_key, p.origin,
+         p.sort_order, b.key AS bus_key
   FROM device_model_ports p
   LEFT JOIN device_model_buses b ON b.id = p.bus_id`;
 const ROUTE_SELECT = `SELECT r.model_id, p.key AS in_port, b.key AS bus
@@ -78,6 +82,9 @@ function toPort(row: PortRow): DeviceModelPort {
     phantom: row.phantom as DeviceModelPort["phantom"],
     busKey: row.bus_key,
     couples: row.couples as DeviceModelPort["couples"],
+    expandable: row.expandable === 1,
+    sourceKey: row.source_key,
+    origin: row.origin === 1,
   };
 }
 
@@ -206,8 +213,9 @@ export async function createPort(db: D1Database, modelId: string, input: PortInp
   await db
     .prepare(
       `INSERT INTO device_model_ports
-       (id, model_id, key, label, direction, signal, connector, level, channels, phantom, bus_id, couples, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+       (id, model_id, key, label, direction, signal, connector, level, channels, phantom, bus_id, couples,
+        expandable, source_key, origin, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM device_model_ports WHERE model_id = ?))`,
     )
     .bind(
@@ -223,6 +231,9 @@ export async function createPort(db: D1Database, modelId: string, input: PortInp
       input.phantom,
       busId,
       input.couples,
+      input.expandable ? 1 : 0,
+      input.sourceKey,
+      input.origin ? 1 : 0,
       modelId,
     )
     .run();

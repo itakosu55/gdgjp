@@ -20,7 +20,11 @@ export function RoutingMatrix({
   /** `${nodeId}::${inPort}::${bus}` for every enabled cell. */
   enabled: ReadonlySet<string>;
 }) {
-  const inputs = model.ports.filter((port) => port.direction === "in");
+  // The node's resolved ports, not the model's: a broadcast app's rows are its
+  // sources, and the model only says what kinds of source exist (§12.3). This
+  // is what makes the matrix the OBS audio-mixer window rather than a single
+  // 音声ソース row that every input in the building shares.
+  const inputs = info.ports.filter((port) => port.direction === "in");
   return (
     <div className="overflow-x-auto rounded-lg border">
       <table className="w-full text-sm">

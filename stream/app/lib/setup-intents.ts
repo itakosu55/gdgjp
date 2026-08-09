@@ -1,7 +1,8 @@
 import type { Fix } from "~/lib/av/diagnostics";
 import type { CatalogLookup } from "~/lib/av/graph";
 import { orientHostAssignment } from "~/lib/av/graph";
-import { applyFix, applyOperation, defaultRoutesFor } from "~/lib/av/mutations";
+import { applyFix, applyOperation, defaultRoutesFor, sourceRoutes } from "~/lib/av/mutations";
+import { initialPorts, newSource, resolvePorts } from "~/lib/av/ports";
 import type { PortRef, SetupDoc } from "~/lib/av/schema";
 import { safeParseSetupDoc } from "~/lib/av/schema";
 import type { DeviceModel, SpaceKind } from "~/lib/av/types";
@@ -53,6 +54,9 @@ const OPTIMISTIC = new Set([
   "add-node",
   "update-node",
   "remove-node",
+  "add-source",
+  "remove-source",
+  "rename-source",
   "add-link",
   "add-assignment",
   "remove-link",
@@ -130,11 +134,21 @@ export function applyIntent(doc: SetupDoc, form: FormData, catalog: IntentCatalo
         doc.nodes.map((node) => node.id),
       );
       const hostNodeId = emptyToNull(form.get("hostNodeId"));
+      // A broadcast app arrives with one audio source and one video source, the
+      // representative setup §12.8 asks for: an OBS whose mixer has no rows at
+      // all is not a document anyone would have wanted, and §9.3 forbids
+      // charging the ordinary case extra data entry.
+      const ports = model ? initialPorts(model) : [];
       return ok(
         applyOperation(doc, {
           kind: "add-node",
-          node: { id: nodeId, ...reference, ...(hostNodeId ? { hostNodeId } : {}) },
-          routes: model ? defaultRoutesFor(nodeId, model) : [],
+          node: {
+            id: nodeId,
+            ...reference,
+            ...(ports.length > 0 ? { ports } : {}),
+            ...(hostNodeId ? { hostNodeId } : {}),
+          },
+          routes: model ? defaultRoutesFor(nodeId, model, ports) : [],
         }),
       );
     }
@@ -166,6 +180,51 @@ export function applyIntent(doc: SetupDoc, form: FormData, catalog: IntentCatalo
 
     case "remove-node":
       return ok(applyOperation(doc, { kind: "remove-node", nodeId: text(form.get("nodeId")) }));
+
+    // A source is a row of a broadcast app's mixer. Adding one is the operation
+    // §12.1 showed to be missing: without it the hall mics and the meeting share
+    // a single strip, and every fix the linter can offer for the resulting
+    // critical makes the event worse.
+    case "add-source": {
+      const nodeId = text(form.get("nodeId"));
+      const node = doc.nodes.find((entry) => entry.id === nodeId);
+      if (!node) return { kind: "error", error: "機材が見つかりません。" };
+      const model = modelOf(node, catalog);
+      if (!model) return { kind: "error", error: "型番が見つかりません。" };
+
+      const ports = newSource(model, node, text(form.get("template")));
+      if (ports.length === 0) return { kind: "error", error: "ソースの種別を選んでください。" };
+      const label = emptyToNull(form.get("label"));
+      const named = label ? ports.map((port) => ({ ...port, label })) : ports;
+
+      return ok(
+        applyOperation(doc, {
+          kind: "add-source",
+          nodeId,
+          ports: named,
+          routes: sourceRoutes(nodeId, model, named),
+        }),
+      );
+    }
+
+    case "remove-source":
+      return ok(
+        applyOperation(doc, {
+          kind: "remove-source",
+          nodeId: text(form.get("nodeId")),
+          portKey: text(form.get("portKey")),
+        }),
+      );
+
+    case "rename-source":
+      return ok(
+        applyOperation(doc, {
+          kind: "rename-source",
+          nodeId: text(form.get("nodeId")),
+          portKey: text(form.get("portKey")),
+          label: text(form.get("label")),
+        }),
+      );
 
     case "add-link": {
       const from = splitPortRef(form.get("from"));
@@ -271,13 +330,20 @@ function newLinkId(doc: SetupDoc): string {
   );
 }
 
-/** A port's direction, resolved through whichever of the two references a node carries. */
+/** Whichever of the two references a node carries, resolved to a model. */
+function modelOf(node: SetupDoc["nodes"][number], catalog: IntentCatalog): DeviceModel | undefined {
+  const modelId = node.deviceId ? catalog.devices.get(node.deviceId)?.modelId : node.modelId;
+  return modelId ? catalog.models.get(modelId) : undefined;
+}
+
+/** A port's direction. Resolved, so a source of a broadcast app is found too. */
 function directionOf(doc: SetupDoc, catalog: IntentCatalog, ref: PortRef) {
   const node = doc.nodes.find((entry) => entry.id === ref[0]);
   if (!node) return undefined;
-  const modelId = node.deviceId ? catalog.devices.get(node.deviceId)?.modelId : node.modelId;
-  const model = modelId ? catalog.models.get(modelId) : undefined;
-  return model?.ports.find((port) => port.key === ref[1])?.direction;
+  const model = modelOf(node, catalog);
+  return model
+    ? resolvePorts(model, node).find((port) => port.key === ref[1])?.direction
+    : undefined;
 }
 
 export function splitPortRef(value: FormDataEntryValue | null): PortRef | null {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEVICES, MODELS } from "~/lib/av/fixtures";
+import { DEVICES, MODELS, OBS_SOURCES } from "~/lib/av/fixtures";
 import type { SetupDoc } from "~/lib/av/schema";
 import type { IntentCatalog } from "~/lib/setup-intents";
 import { applyIntent, isOptimistic } from "~/lib/setup-intents";
@@ -104,9 +104,9 @@ describe("applyIntent", () => {
     const base = doc({
       nodes: [
         { id: "n1", deviceId: "d_pc" },
-        { id: "n2", modelId: "m_obs", hostNodeId: "n1" },
+        { id: "n2", modelId: "m_obs", hostNodeId: "n1", ports: OBS_SOURCES },
       ],
-      links: [{ id: "l1", from: ["n1", "usb_in"], to: ["n2", "audio_in"] }],
+      links: [{ id: "l1", from: ["n1", "usb_in"], to: ["n2", "audio_src:1"] }],
     });
 
     const next = applied(base, { intent: "remove-node", nodeId: "n1" });
@@ -119,7 +119,7 @@ describe("applyIntent", () => {
     const base = doc({
       nodes: [
         { id: "n1", deviceId: "d_pc" },
-        { id: "n2", modelId: "m_obs", hostNodeId: "n1" },
+        { id: "n2", modelId: "m_obs", hostNodeId: "n1", ports: OBS_SOURCES },
       ],
     });
 
@@ -129,11 +129,11 @@ describe("applyIntent", () => {
     it("runs input to input when the app is capturing", () => {
       const next = applied(base, {
         intent: "add-assignment",
-        app: "n2::audio_in",
+        app: "n2::audio_src:1",
         host: "n1::usb_in",
       });
 
-      expect(next.links).toEqual([{ id: "l1", from: ["n1", "usb_in"], to: ["n2", "audio_in"] }]);
+      expect(next.links).toEqual([{ id: "l1", from: ["n1", "usb_in"], to: ["n2", "audio_src:1"] }]);
     });
 
     it("runs output to output when the app is playing out", () => {
@@ -150,7 +150,7 @@ describe("applyIntent", () => {
 
     it("refuses to cross the faces, which would be a cable and not a selection", () => {
       expect(
-        failed(base, { intent: "add-assignment", app: "n2::audio_in", host: "n1::usb_out" }),
+        failed(base, { intent: "add-assignment", app: "n2::audio_src:1", host: "n1::usb_out" }),
       ).toContain("向き");
     });
 
@@ -160,7 +160,11 @@ describe("applyIntent", () => {
       });
 
       expect(
-        failed(twoMachines, { intent: "add-assignment", app: "n2::audio_in", host: "n3::usb_in" }),
+        failed(twoMachines, {
+          intent: "add-assignment",
+          app: "n2::audio_src:1",
+          host: "n3::usb_in",
+        }),
       ).toContain("ホストではありません");
     });
   });
@@ -187,11 +191,108 @@ describe("applyIntent", () => {
   it("rejects an intent it does not know", () => {
     expect(failed(doc(), { intent: "drop-database" })).toContain("drop-database");
   });
+
+  /**
+   * A broadcast app's mixer has one row per source, and the sources are chosen
+   * on the day. Adding one is the operation §12.1 showed to be missing: without
+   * it the hall mics and the meeting share a strip, and every fix the linter can
+   * offer for the resulting critical makes the event worse.
+   */
+  describe("a broadcast app's sources", () => {
+    const base = doc({
+      nodes: [
+        { id: "n1", deviceId: "d_pc" },
+        { id: "n2", modelId: "m_obs", hostNodeId: "n1", ports: OBS_SOURCES },
+      ],
+      routing: [
+        { nodeId: "n2", inPort: "audio_src:1", bus: "program" },
+        { nodeId: "n2", inPort: "video_src:1", bus: "program" },
+      ],
+    });
+
+    // §9.3 — the ordinary case must not cost extra data entry.
+    it("gives a new broadcast app one audio source and one video source", () => {
+      const next = applied(doc(), { intent: "add-node", deviceId: "m:m_obs" });
+
+      expect(next.nodes[0]?.ports).toEqual(OBS_SOURCES);
+      expect(next.routing).toEqual([
+        { nodeId: "n1", inPort: "audio_src:1", bus: "program" },
+        { nodeId: "n1", inPort: "video_src:1", bus: "program" },
+      ]);
+    });
+
+    it("leaves a mixer's fixed jacks alone", () => {
+      expect(
+        applied(doc(), { intent: "add-node", deviceId: "d:d_mixer" }).nodes[0]?.ports,
+      ).toBeUndefined();
+    });
+
+    it("adds a source with the name it was given, already on PROGRAM", () => {
+      const next = applied(base, {
+        intent: "add-source",
+        nodeId: "n2",
+        template: "audio_src",
+        label: "開演前BGM",
+      });
+
+      expect(next.nodes[1]?.ports?.at(-1)).toEqual({
+        key: "audio_src:2",
+        template: "audio_src",
+        label: "開演前BGM",
+      });
+      expect(next.routing).toContainEqual({
+        nodeId: "n2",
+        inPort: "audio_src:2",
+        bus: "program",
+      });
+    });
+
+    it("adds a browser source as one act and two ports", () => {
+      const ports = applied(base, {
+        intent: "add-source",
+        nodeId: "n2",
+        template: "browser_audio",
+        label: "Meet",
+      }).nodes[1]?.ports;
+
+      expect(ports?.slice(2).map((port) => port.key)).toEqual([
+        "browser_audio:1",
+        "browser_video:1",
+      ]);
+      expect(ports?.[2]?.sourceId).toBe(ports?.[3]?.sourceId);
+    });
+
+    it("renames a source without touching its wiring", () => {
+      const next = applied(base, {
+        intent: "rename-source",
+        nodeId: "n2",
+        portKey: "audio_src:1",
+        label: "登壇者マイク",
+      });
+
+      expect(next.nodes[1]?.ports?.[0]?.label).toBe("登壇者マイク");
+      expect(next.routing).toEqual(base.routing);
+    });
+
+    it("removes a source and the matrix row that was its own", () => {
+      const next = applied(base, { intent: "remove-source", nodeId: "n2", portKey: "audio_src:1" });
+
+      expect(next.nodes[1]?.ports?.map((port) => port.key)).toEqual(["video_src:1"]);
+      expect(next.routing).toEqual([{ nodeId: "n2", inPort: "video_src:1", bus: "program" }]);
+    });
+
+    it("refuses a source kind the model does not have", () => {
+      expect(
+        failed(base, { intent: "add-source", nodeId: "n2", template: "monitor_out" }),
+      ).toContain("ソース");
+    });
+  });
 });
 
 describe("isOptimistic", () => {
   it("covers every document edit", () => {
-    for (const intent of ["add-node", "update-node", "add-link", "toggle-route", "apply-fix"]) {
+    const intents = ["add-node", "update-node", "add-link", "toggle-route", "apply-fix"];
+    for (const intent of [...intents, "add-source", "remove-source", "rename-source"]) {
       expect(isOptimistic(intent)).toBe(true);
     }
   });

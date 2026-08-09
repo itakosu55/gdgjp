@@ -309,7 +309,7 @@ test.describe("wiring on the canvas", () => {
 
     // Two inputs. As a cable this would be nonsense; between OBS and the PC it
     // runs on it is which capture device OBS is listening to.
-    await dragWire(page, jack(page, "n4", "audio_in"), jack(page, "n3", "usb_in"));
+    await dragWire(page, jack(page, "n4", "audio_src:1"), jack(page, "n3", "usb_in"));
 
     await page.goto(setupUrl("e2e_setup_assign", "cables"));
     const assignments = page
@@ -418,5 +418,68 @@ test.describe("the editor shell", () => {
 
     await page.getByRole("button", { name: "インスペクタを開く" }).click();
     await expect(page.locator("#space-n2")).toBeInViewport();
+  });
+});
+
+/**
+ * A broadcast app's mixer has one row per source, and the sources are chosen on
+ * the day. This is §12's acceptance condition driven through the real editor:
+ * the meeting is monitored into the room and the hall mic is not, which with a
+ * single 音声ソース row could not be written down at all.
+ */
+test.describe("a broadcast app's sources", () => {
+  test("keeps the hall mic off the monitor bus while the meeting is on it", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_sources", "routing", "n5"));
+
+    const mic = page.getByRole("row").filter({ hasText: "E2E 会場マイク" });
+    await expect(mic.getByRole("button", { name: /PROGRAM$/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(mic.getByRole("button", { name: /MONITOR$/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    // The browser source is two rows under one name; the audio half comes
+    // first, and it is the one carrying the meeting into the room.
+    const meet = page.getByRole("row").filter({ hasText: "E2E Meet" }).first();
+    await expect(meet.getByRole("button", { name: /MONITOR$/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    // Which is the whole point: the monitor return no longer closes a loop.
+    await expect(ruleIds(page)).resolves.not.toContain("stream-monitor-loop");
+  });
+
+  test("adding a source gives the mixer a new row of its own", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_sources", "routing", "n5"));
+
+    const sources = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "ソース", exact: true }) });
+    await sources.locator("#source-n5").selectOption("audio_src");
+
+    await saving(page, () => sources.getByRole("button", { name: "追加" }).click());
+
+    // It arrives already on PROGRAM, the default its template carries, and the
+    // rows that were there are untouched.
+    const added = page.getByRole("row").filter({ hasText: "音声ソース" });
+    await expect(added.getByRole("button", { name: /PROGRAM$/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(added.getByRole("button", { name: /MONITOR$/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    const mic = page.getByRole("row").filter({ hasText: "E2E 会場マイク" });
+    await expect(mic.getByRole("button", { name: /MONITOR$/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 });

@@ -110,6 +110,10 @@ export async function action(args: Route.ActionArgs) {
         // Only outputs belong to a bus; an input's routing is the matrix.
         busKey: direction === "out" ? emptyToNull(form.get("busKey")) : null,
         couples: coupling(form.get("couples"), model?.category ?? "generic", direction),
+        // What a broadcast app declares is kinds of source, not jacks (§12.3).
+        expandable: form.get("expandable") === "1",
+        sourceKey: emptyToNull(form.get("sourceKey")) ? slug(form.get("sourceKey")) : null,
+        origin: form.get("origin") === "1",
       });
       return null;
     }
@@ -154,6 +158,20 @@ function coupling(
   if (raw === "from_space" || raw === "to_space") return raw;
   if (raw === "none") return null;
   return defaultCoupling(category, direction);
+}
+
+/**
+ * What the setup gets to decide about this port, in one column.
+ *
+ * A physical jack says nothing here. A template says how its instances behave:
+ * whether they come in pairs, and whether a cable is expected to reach them.
+ */
+function sourceNote(port: DeviceModelPort): string {
+  if (!port.expandable) return "—";
+  const parts = ["構成で増やせる"];
+  if (port.sourceKey) parts.push(`対: ${port.sourceKey}`);
+  if (port.origin) parts.push("起点");
+  return parts.join(" / ");
 }
 
 function slug(value: FormDataEntryValue | null): string {
@@ -205,6 +223,7 @@ export default function ModelDetailPage({ loaderData, actionData }: Route.Compon
                       <th className="px-3 py-2">+48V</th>
                       <th className="px-3 py-2">バス</th>
                       <th className="px-3 py-2">空間</th>
+                      <th className="px-3 py-2">ソース</th>
                       <th className="px-3 py-2" />
                     </tr>
                   </thead>
@@ -224,6 +243,7 @@ export default function ModelDetailPage({ loaderData, actionData }: Route.Compon
                         <td className="px-3 py-2">
                           {port.couples ? COUPLES_SHORT_LABELS[port.couples] : "—"}
                         </td>
+                        <td className="px-3 py-2 text-xs">{sourceNote(port)}</td>
                         <td className="px-3 py-2 text-right">
                           <Form method="post">
                             <input type="hidden" name="intent" value="delete-port" />
@@ -407,6 +427,33 @@ export default function ModelDetailPage({ loaderData, actionData }: Route.Compon
                     </option>
                   ))}
                   <option value="none">結合しない</option>
+                </select>
+              </Field>
+              <Field
+                label="ソースの扱い"
+                htmlFor="expandable"
+                hint="配信ソフトのように、本数を構成側が決める端子か"
+              >
+                <select id="expandable" name="expandable" className={selectClassName}>
+                  <option value="">固定の端子</option>
+                  <option value="1">構成で増やせる (ソーステンプレート)</option>
+                </select>
+              </Field>
+              <Field
+                label="対のキー"
+                htmlFor="sourceKey"
+                hint="ブラウザソースの音声と映像のように、2 つで 1 ソースになる端子に同じ値を"
+              >
+                <Input id="sourceKey" name="sourceKey" placeholder="browser" maxLength={40} />
+              </Field>
+              <Field
+                label="上流を持たない起点"
+                htmlFor="origin"
+                hint="BGM や動画の再生。ケーブルが来ない入力です"
+              >
+                <select id="origin" name="origin" className={selectClassName}>
+                  <option value="">いいえ</option>
+                  <option value="1">はい</option>
                 </select>
               </Field>
               <Field label="チャンネル数" htmlFor="channels">

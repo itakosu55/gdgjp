@@ -1,7 +1,8 @@
 import type { Diagnostic, Severity } from "~/lib/av/diagnostics";
 import { placeKeyOf } from "~/lib/av/places";
+import { resolvePorts } from "~/lib/av/ports";
 import type { PortRef, SetupDoc, SetupNode, Space } from "~/lib/av/schema";
-import type { DeviceModel, SpaceKind } from "~/lib/av/types";
+import type { DeviceModel, DeviceModelPort, SpaceKind } from "~/lib/av/types";
 
 /**
  * View model for the setup editor.
@@ -17,6 +18,14 @@ export type NodeInfo = {
   node: SetupNode;
   device: { id: string; name: string } | undefined;
   model: DeviceModel | undefined;
+  /**
+   * The jacks this node actually has: the model's, with its source templates
+   * expanded into the sources the document names (§12.3). Every panel reads
+   * this rather than `model.ports`, and it is the same `resolvePorts` the graph
+   * calls — one implementation, or the optimistic picture and the saved
+   * document disagree about how many rows OBS has.
+   */
+  ports: DeviceModelPort[];
   label: string;
 };
 
@@ -41,6 +50,7 @@ export function buildNodeInfo(
       node,
       device,
       model,
+      ports: model ? resolvePorts(model, node) : [],
       label: node.label ?? device?.name ?? model?.name ?? node.deviceId ?? node.modelId ?? node.id,
     };
   });
@@ -109,13 +119,13 @@ export function meetingOfNode(doc: SetupDoc, node: SetupNode): Space | undefined
 
 export function describePort(nodeInfo: readonly NodeInfo[], ref: PortRef): string {
   const info = nodeInfo.find((entry) => entry.node.id === ref[0]);
-  const port = info?.model?.ports.find((entry) => entry.key === ref[1]);
+  const port = info?.ports.find((entry) => entry.key === ref[1]);
   return `${info?.label ?? ref[0]} / ${port?.label ?? ref[1]}`;
 }
 
 /** Just the jack, for the inspector where the node's own name is the heading. */
 export function portLabel(info: NodeInfo | undefined, portKey: string): string {
-  return info?.model?.ports.find((entry) => entry.key === portKey)?.label ?? portKey;
+  return info?.ports.find((entry) => entry.key === portKey)?.label ?? portKey;
 }
 
 const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, error: 1, warn: 2, info: 3 };

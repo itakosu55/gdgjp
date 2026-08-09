@@ -256,7 +256,7 @@ describe("telling a device selection from a cable", () => {
     ],
     links: [
       { id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-      { id: "l2", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_in"] },
+      { id: "l2", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
       { id: "l3", from: ["n_obs", "monitor_out"], to: ["n_pc", "headphone_out"] },
     ],
   });
@@ -287,7 +287,7 @@ describe("telling a device selection from a cable", () => {
 });
 
 describe("orienting a device selection", () => {
-  const app = ["n_obs", "audio_in"] as PortRef;
+  const app = ["n_obs", "audio_src:1"] as PortRef;
   const host = ["n_pc", "usb_in"] as PortRef;
 
   // An app capturing from a jack: the signal runs host → app.
@@ -375,5 +375,59 @@ describe("transport spaces", () => {
     expect(graph.nodes.get("n_join_stream")?.device).toBeNull();
     expect(graph.nodes.get("n_join_stream")?.model.id).toBe("m_meet");
     expect(graph.issues).toEqual([]);
+  });
+});
+
+/**
+ * A broadcast app's ports come from the document, and the rest of the graph
+ * must not be able to tell. Resolving them once in `resolveNode` is what buys
+ * that: `buildInternalEdges`, `buildSpaceEdges` and `portVertices` all read the
+ * resolved map and never learn that a port can have come from a setup.
+ */
+describe("sources of a broadcast app", () => {
+  const obs = {
+    id: "n_obs",
+    modelId: "m_obs",
+    ports: [
+      { key: "audio_src:1", template: "audio_src", label: "登壇者マイク" },
+      { key: "audio_src:2", template: "audio_src", label: "開演前BGM" },
+    ],
+  } satisfies SetupDoc["nodes"][number];
+
+  it("gives each source its own vertex", () => {
+    const graph = build({ nodes: [obs] });
+
+    expect(graph.vertices.has(portVertexId("n_obs", "audio_src:1"))).toBe(true);
+    expect(graph.vertices.has(portVertexId("n_obs", "audio_src:2"))).toBe(true);
+    // The template itself is not a jack — nothing can be plugged into it.
+    expect(graph.vertices.has(portVertexId("n_obs", "audio_src"))).toBe(false);
+  });
+
+  // The defect §12.1 named: with one row, enabling MONITOR carried every source
+  // to it at once. Two rows, two independent cells.
+  it("routes one source to a bus without carrying the other along", () => {
+    const graph = build({
+      nodes: [obs],
+      routing: [{ nodeId: "n_obs", inPort: "audio_src:2", bus: "monitor" }],
+    });
+
+    expect(
+      hasEdge(graph, portVertexId("n_obs", "audio_src:2"), portVertexId("n_obs", "monitor_out")),
+    ).toBe(true);
+    expect(
+      hasEdge(graph, portVertexId("n_obs", "audio_src:1"), portVertexId("n_obs", "monitor_out")),
+    ).toBe(false);
+  });
+
+  it("names a source whose kind the model does not declare", () => {
+    const graph = build({
+      nodes: [{ id: "n_obs", modelId: "m_obs", ports: [{ key: "x:1", template: "x" }] }],
+    });
+
+    expect(graph.issues).toContainEqual({
+      kind: "unknown-port-template",
+      nodeId: "n_obs",
+      template: "x",
+    });
   });
 });

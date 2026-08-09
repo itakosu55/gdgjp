@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { satelliteRooms, testContext } from "./fixtures";
+import { OBS_SOURCES, satelliteRooms, testContext } from "./fixtures";
 import { buildGraph } from "./graph";
 import type { LayoutNode } from "./layout";
 import { layoutGraph } from "./layout";
@@ -223,14 +223,14 @@ describe("layoutGraph", () => {
         { id: "n_mixer", deviceId: "d_mixer" },
         { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
         { id: "n_pc", deviceId: "d_pc" },
-        { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+        { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
       ],
       links: [
         { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
         { id: "l2", from: ["n_mic2", "out"], to: ["n_mixer", "ch2"] },
         { id: "l3", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
         { id: "l4", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-        { id: "l5", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_in"] },
+        { id: "l5", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
       ],
       routing: [
         { nodeId: "n_mixer", inPort: "ch1", bus: "main" },
@@ -378,12 +378,12 @@ describe("layoutGraph", () => {
       nodes: [
         { id: "n_mixer", deviceId: "d_mixer" },
         { id: "n_pc", deviceId: "d_pc" },
-        { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+        { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
         { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" },
       ],
       links: [
         { id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-        { id: "l2", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_in"] },
+        { id: "l2", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
         { id: "l3", from: ["n_pc", "usb_in"], to: ["n_meet", "mic_in"] },
       ],
       routing: [],

@@ -63,6 +63,18 @@ export const EVENTS = [EVENT, GEAR_EVENT] as const;
 
 const HALL = { id: "sp1", kind: "acoustic", label: "メインホール", venueKey: "e2e-hall" };
 
+/**
+ * What `add-node` gives an OBS: one audio source and one video source.
+ *
+ * A broadcast app's inputs are templates, and the setup says how many there are
+ * (§12.3). A node with no sources has an empty mixer, so every seeded OBS
+ * carries the representative pair the editor would have created.
+ */
+const OBS_SOURCES = [
+  { key: "audio_src:1", template: "audio_src" },
+  { key: "video_src:1", template: "video_src" },
+];
+
 /** Mic → mixer MAIN → speaker → room → mic. The canonical howl. */
 function howlingDoc() {
   return {
@@ -73,13 +85,13 @@ function howlingDoc() {
       { id: "n2", deviceId: "e2e_dev_mixer" },
       { id: "n3", deviceId: "e2e_dev_speaker", spaceId: "sp1" },
       { id: "n4", deviceId: "e2e_dev_pc" },
-      { id: "n5", modelId: MODELS.obs, hostNodeId: "n4" },
+      { id: "n5", modelId: MODELS.obs, hostNodeId: "n4", ports: OBS_SOURCES },
     ],
     links: [
       { id: "l1", from: ["n1", "out"], to: ["n2", "ch1"] },
       { id: "l2", from: ["n2", "main_out"], to: ["n3", "in"] },
       { id: "l3", from: ["n2", "usb_send"], to: ["n4", "usb_in"] },
-      { id: "l4", from: ["n4", "usb_in"], to: ["n5", "audio_in"] },
+      { id: "l4", from: ["n4", "usb_in"], to: ["n5", "audio_src:1"] },
     ],
     // ch1 also goes to USB, so cutting MAIN must silence the room without
     // silencing the stream.
@@ -118,7 +130,7 @@ function silentDoc() {
     nodes: [
       { id: "n1", deviceId: "e2e_dev_mic", spaceId: "sp1" },
       { id: "n2", deviceId: "e2e_dev_pc" },
-      { id: "n3", modelId: MODELS.obs, hostNodeId: "n2" },
+      { id: "n3", modelId: MODELS.obs, hostNodeId: "n2", ports: OBS_SOURCES },
     ],
     links: [],
     routing: [],
@@ -185,7 +197,7 @@ function twoRoomsDoc() {
       { id: "n2", deviceId: "e2e_dev_mic", spaceId: "sp2" },
       { id: "n3", deviceId: "e2e_dev_speaker", spaceId: "sp1" },
       { id: "n4", deviceId: "e2e_dev_pc", spaceId: "sp1" },
-      { id: "n5", modelId: MODELS.obs, hostNodeId: "n4" },
+      { id: "n5", modelId: MODELS.obs, hostNodeId: "n4", ports: OBS_SOURCES },
     ],
     links: [],
     routing: [],
@@ -207,10 +219,61 @@ function unwiredDoc() {
       { id: "n1", deviceId: "e2e_dev_mic", spaceId: "sp1" },
       { id: "n2", deviceId: "e2e_dev_mixer", spaceId: "sp1" },
       { id: "n3", deviceId: "e2e_dev_pc", spaceId: "sp1" },
-      { id: "n4", modelId: MODELS.obs, hostNodeId: "n3" },
+      { id: "n4", modelId: MODELS.obs, hostNodeId: "n3", ports: OBS_SOURCES },
     ],
     links: [],
     routing: [],
+  };
+}
+
+/**
+ * The standard hybrid layout — the reason §12 exists.
+ *
+ * The hall mic and the meeting are separate rows of OBS's mixer, so the meeting
+ * can be monitored into the room while the hall mic is not. With a single
+ * 音声ソース row the two shared a strip and the correct setup was unwritable.
+ */
+function hybridDoc() {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      HALL,
+      { id: "sp2", kind: "transport", label: "E2E ハイブリッド Meet", meetingKey: "e2e-hybrid" },
+    ],
+    nodes: [
+      { id: "n1", deviceId: "e2e_dev_mic", spaceId: "sp1" },
+      { id: "n2", deviceId: "e2e_dev_mixer", spaceId: "sp1" },
+      { id: "n3", deviceId: "e2e_dev_speaker", spaceId: "sp1" },
+      { id: "n4", deviceId: "e2e_dev_pc", spaceId: "sp1" },
+      {
+        id: "n5",
+        modelId: MODELS.obs,
+        hostNodeId: "n4",
+        ports: [
+          { key: "audio_src:1", template: "audio_src", label: "E2E 会場マイク" },
+          { key: "browser_audio:1", template: "browser_audio", label: "E2E Meet", sourceId: "s1" },
+          { key: "browser_video:1", template: "browser_video", label: "E2E Meet", sourceId: "s1" },
+        ],
+      },
+      { id: "n6", modelId: MODELS.meet, hostNodeId: "n4", spaceId: "sp2" },
+    ],
+    links: [
+      { id: "l1", from: ["n1", "out"], to: ["n2", "ch1"] },
+      { id: "l2", from: ["n2", "usb_send"], to: ["n4", "usb_in"] },
+      { id: "l3", from: ["n4", "usb_in"], to: ["n5", "audio_src:1"] },
+      { id: "l4", from: ["n6", "spk_out"], to: ["n5", "browser_audio:1"] },
+      { id: "l5", from: ["n5", "monitor_out"], to: ["n4", "usb_out"] },
+      { id: "l6", from: ["n4", "usb_out"], to: ["n2", "usb_in"] },
+      { id: "l7", from: ["n2", "main_out"], to: ["n3", "in"] },
+    ],
+    // Mix-Minus at the mixer, and the meeting alone on OBS's monitor bus.
+    routing: [
+      { nodeId: "n2", inPort: "ch1", bus: "usb" },
+      { nodeId: "n2", inPort: "usb_in", bus: "main" },
+      { nodeId: "n5", inPort: "audio_src:1", bus: "program" },
+      { nodeId: "n5", inPort: "browser_audio:1", bus: "program" },
+      { nodeId: "n5", inPort: "browser_audio:1", bus: "monitor" },
+    ],
   };
 }
 
@@ -274,6 +337,13 @@ export const SETUPS = [
     eventId: EVENT.id,
     name: "E2E 端子ミュート",
     doc: transportEchoDoc(),
+  },
+  // Mutated: a source is added to OBS from the inspector.
+  {
+    id: "e2e_setup_sources",
+    eventId: EVENT.id,
+    name: "E2E ソース追加",
+    doc: hybridDoc(),
   },
   // Lives on the event whose gear list event.spec.ts is allowed to change.
   {

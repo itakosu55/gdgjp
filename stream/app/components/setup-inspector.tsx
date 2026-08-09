@@ -161,6 +161,8 @@ export function SetupInspector({
         </div>
       </SetupForm>
 
+      <Sources info={info} />
+
       {hasMatrix(info) && info.model ? (
         <section>
           <SectionHead title="ルーティング行列">
@@ -223,7 +225,7 @@ export function SetupInspector({
  * face a space are listed — the rest have nothing to mute.
  */
 function MutedPorts({ info }: { info: NodeInfo }) {
-  const facing = (info.model?.ports ?? []).filter((port) => port.couples !== null);
+  const facing = info.ports.filter((port) => port.couples !== null);
   if (facing.length === 0) return null;
   const muted = new Set(info.node.isolatedPorts ?? []);
 
@@ -248,6 +250,129 @@ function MutedPorts({ info }: { info: NodeInfo }) {
         </label>
       ))}
     </fieldset>
+  );
+}
+
+/**
+ * The sources of a broadcast app — the rows of its mixer.
+ *
+ * OBS's channel count is not a property of OBS: it has one strip per source and
+ * the sources are chosen on the day. Until this list existed the hall mics and
+ * the meeting shared one strip, so the standard hybrid layout could not be
+ * written down and the fix the linter offered for the resulting critical was to
+ * cut the remote participants out of the room (§12.1).
+ *
+ * A browser source is one row here and two ports underneath: the picture and
+ * the sound stay separate so "the video is on the stream but its audio is not"
+ * is still expressible, but nobody adds them one at a time (§12.4).
+ */
+function Sources({ info }: { info: NodeInfo }) {
+  const templates = (info.model?.ports ?? []).filter((port) => port.expandable);
+  if (templates.length === 0) return null;
+
+  const instances = info.node.ports ?? [];
+  const groups = new Map<string, { key: string; label: string; parts: string[] }>();
+  for (const instance of instances) {
+    const id = instance.sourceId ?? instance.key;
+    const template = templates.find((port) => port.key === instance.template);
+    const existing = groups.get(id);
+    if (existing) {
+      existing.parts.push(template?.label ?? instance.template);
+      continue;
+    }
+    groups.set(id, {
+      key: instance.key,
+      label: instance.label ?? "",
+      parts: [template?.label ?? instance.template],
+    });
+  }
+
+  // Paired templates are one choice, not two: adding "ブラウザ音声" alone is
+  // never what anyone means.
+  const options: { value: string; label: string }[] = [];
+  const seen = new Set<string>();
+  for (const template of templates) {
+    const group = template.sourceKey ?? template.key;
+    if (seen.has(group)) continue;
+    seen.add(group);
+    const label = template.sourceKey
+      ? templates
+          .filter((port) => port.sourceKey === template.sourceKey)
+          .map((port) => port.label)
+          .join(" + ")
+      : template.label;
+    options.push({ value: template.key, label });
+  }
+
+  return (
+    <section>
+      <SectionHead title="ソース" />
+      <p className="mb-2 text-xs text-muted-foreground">
+        1 ソースがルーティング行列の 1 行になります。会場マイクと会議アプリを別の行に
+        すれば、会議の音だけをモニターへ回せます。
+      </p>
+      {groups.size === 0 ? (
+        <p className="text-xs text-muted-foreground">ソースがまだありません。</p>
+      ) : (
+        <ul className="mb-3 flex flex-col gap-1">
+          {[...groups.values()].map((group) => (
+            <li
+              key={group.key}
+              className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5"
+            >
+              <SetupForm className="flex min-w-0 flex-1 items-center gap-2">
+                <input type="hidden" name="intent" value="rename-source" />
+                <input type="hidden" name="nodeId" value={info.node.id} />
+                <input type="hidden" name="portKey" value={group.key} />
+                <Input
+                  name="label"
+                  defaultValue={group.label}
+                  placeholder={group.parts.join(" + ")}
+                  maxLength={120}
+                  className="h-7 min-w-0 flex-1 text-xs"
+                  aria-label={`${group.parts.join(" + ")} の名前`}
+                />
+                <button
+                  type="submit"
+                  className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  改名
+                </button>
+              </SetupForm>
+              <SetupForm className="shrink-0">
+                <input type="hidden" name="intent" value="remove-source" />
+                <input type="hidden" name="nodeId" value={info.node.id} />
+                <input type="hidden" name="portKey" value={group.key} />
+                <button
+                  type="submit"
+                  className="text-xs text-muted-foreground hover:text-destructive"
+                >
+                  削除
+                </button>
+              </SetupForm>
+            </li>
+          ))}
+        </ul>
+      )}
+      <SetupForm className="flex items-end gap-2">
+        <input type="hidden" name="intent" value="add-source" />
+        <input type="hidden" name="nodeId" value={info.node.id} />
+        <div className="min-w-0 flex-1">
+          <Field label="ソースを追加" htmlFor={`source-${info.node.id}`}>
+            <select id={`source-${info.node.id}`} name="template" className={selectClassName}>
+              {options.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <Button type="submit" variant="secondary" size="sm">
+          追加
+        </Button>
+      </SetupForm>
+    </section>
   );
 }
 

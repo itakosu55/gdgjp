@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Diagnostic } from "./diagnostics";
 import {
+  OBS_SOURCES,
+  hybridMonitorMix,
   laptopOnlyMeeting,
   satelliteRooms,
   speakerphoneMeeting,
@@ -90,19 +92,19 @@ describe("acoustic feedback", () => {
           { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
           { id: "n_mixer", deviceId: "d_mixer" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
           { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
         ],
         links: [
           { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
           { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-          { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_in"] },
+          { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
           { id: "l4", from: ["n_obs", "monitor_out"], to: ["n_pc", "headphone_out"] },
           { id: "l5", from: ["n_pc", "headphone_out"], to: ["n_speaker", "in"] },
         ],
         routing: [
           { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
-          { nodeId: "n_obs", inPort: "audio_in", bus: "monitor" },
+          { nodeId: "n_obs", inPort: "audio_src:1", bus: "monitor" },
         ],
       }),
       testContext(),
@@ -281,7 +283,7 @@ describe("stream coverage", () => {
         nodes: [
           { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
         ],
       }),
       testContext(),
@@ -299,12 +301,12 @@ describe("stream coverage", () => {
           { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
           { id: "n_mixer", deviceId: "d_mixer" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
         ],
         links: [
           { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
           { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-          { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_in"] },
+          { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
         ],
         routing: [{ nodeId: "n_mixer", inPort: "ch1", bus: "usb" }],
       }),
@@ -336,16 +338,16 @@ describe("who hears it", () => {
       { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
       { id: "n_mixer", deviceId: "d_mixer" },
       { id: "n_pc", deviceId: "d_pc" },
-      { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+      { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
     ],
     links: [
       { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
       { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_in"] },
+      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
     ] satisfies SetupDoc["links"],
     routing: [
       { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
-      { nodeId: "n_obs", inPort: "audio_in", bus: "program" },
+      { nodeId: "n_obs", inPort: "audio_src:1", bus: "program" },
     ],
   };
 
@@ -435,17 +437,17 @@ describe("infinite mirror", () => {
           { id: "n_cam", deviceId: "d_camera", spaceId: "sp_screen" },
           { id: "n_cap", deviceId: "d_capture" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
           { id: "n_proj", deviceId: "d_projector", spaceId: "sp_screen" },
         ],
         links: [
           { id: "l1", from: ["n_cam", "hdmi_out"], to: ["n_cap", "hdmi_in"] },
           { id: "l2", from: ["n_cap", "usb_out"], to: ["n_pc", "capture_in"] },
-          { id: "l3", from: ["n_pc", "capture_in"], to: ["n_obs", "video_in"] },
+          { id: "l3", from: ["n_pc", "capture_in"], to: ["n_obs", "video_src:1"] },
           { id: "l4", from: ["n_obs", "program_video"], to: ["n_pc", "hdmi_out"] },
           { id: "l5", from: ["n_pc", "hdmi_out"], to: ["n_proj", "hdmi_in"] },
         ],
-        routing: [{ nodeId: "n_obs", inPort: "video_in", bus: "program" }],
+        routing: [{ nodeId: "n_obs", inPort: "video_src:1", bus: "program" }],
       }),
       testContext(),
     );
@@ -714,5 +716,69 @@ describe("severity ordering", () => {
     );
 
     expect(found[0]?.severity).toBe("critical");
+  });
+});
+
+/**
+ * §12's acceptance condition: the standard hybrid layout, finally writable.
+ *
+ * The hall mics are off the monitor bus and the meeting is on it. With one
+ * 音声ソース row the two shared a strip, so this was not a granularity
+ * complaint — the correct setup could not be written at all, and the fix the
+ * linter offered for the critical it then raised was to take the remote
+ * participants out of the room.
+ */
+describe("a broadcast app's sources", () => {
+  it("monitors the meeting into the room without dragging the hall mic along", () => {
+    const found = ruleIds(lint(hybridMonitorMix(), testContext()));
+
+    expect(found).not.toContain("stream-monitor-loop");
+    expect(found).not.toContain("acoustic-feedback-loop");
+    // And not by silencing the stream instead: the mic reaches PROGRAM on its
+    // own row, which is the whole point of there being two rows.
+    expect(found).not.toContain("no-audio-to-stream");
+  });
+
+  it("still catches the monitor loop when the hall mic is put on the monitor bus", () => {
+    const base = hybridMonitorMix();
+    const found = lint(
+      {
+        ...base,
+        routing: [...base.routing, { nodeId: "n_obs", inPort: "audio_src:1", bus: "monitor" }],
+      },
+      testContext(),
+    );
+
+    const loop = found.find((diagnostic) => diagnostic.ruleId === "stream-monitor-loop");
+    expect(loop?.severity).toBe("critical");
+    // §4.3: the offered fix has to be the operation a person would perform.
+    // It now names the hall mic's row — cut that, and the remote participants
+    // are still heard in the room. Before, the only row there was to cut was
+    // the one carrying them.
+    expect(loop?.fixes).toContainEqual({
+      kind: "disable-route",
+      nodeId: "n_obs",
+      inPort: "audio_src:1",
+      bus: "monitor",
+    });
+    expect(
+      loop?.fixes?.every((fix) => fix.kind !== "disable-route" || fix.inPort !== "browser_audio:1"),
+    ).toBe(true);
+  });
+
+  /**
+   * The one critical the correct setup keeps, and it is a true one: the meeting
+   * comes out of the PA, the hall mic hears the room, and that return goes back
+   * into the meeting through the air. Mix-Minus works on buses, not on rooms,
+   * so no routing change removes it — which is why it is the acoustic rule and
+   * not a monitor loop.
+   */
+  it("reports the acoustic return into the meeting, which no bus can cut", () => {
+    const echo = lint(hybridMonitorMix(), testContext()).find(
+      (diagnostic) => diagnostic.ruleId === "remote-echo-acoustic",
+    );
+
+    expect(echo?.severity).toBe("critical");
+    expect(echo?.nodeIds).toContain("n_join");
   });
 });

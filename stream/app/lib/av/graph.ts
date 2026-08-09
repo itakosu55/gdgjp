@@ -1,4 +1,5 @@
 import { placeKeyOf } from "./places";
+import { resolvePorts, unknownTemplates } from "./ports";
 import type { PortRef, SetupDoc, SetupLink, SetupNode, Space } from "./schema";
 import type {
   CouplingDirection,
@@ -92,6 +93,7 @@ export type ResolutionIssue =
   | { kind: "unknown-model"; nodeId: string; modelId: string }
   | { kind: "no-device-reference"; nodeId: string }
   | { kind: "unknown-space"; nodeId: string; spaceId: string }
+  | { kind: "unknown-port-template"; nodeId: string; template: string }
   | { kind: "unknown-host"; nodeId: string; hostNodeId: string }
   | { kind: "unknown-link-node"; linkId: string; nodeId: string }
   | { kind: "unknown-link-port"; linkId: string; nodeId: string; portKey: string }
@@ -239,12 +241,20 @@ function resolveNode(
     return null;
   }
 
+  for (const template of unknownTemplates(model, node)) {
+    issues.push({ kind: "unknown-port-template", nodeId: node.id, template });
+  }
+
   return {
     id: node.id,
     node,
     device,
     model,
-    ports: new Map(model.ports.map((port) => [port.key, port])),
+    // Not `model.ports`: for a broadcast app the model declares kinds of source
+    // and the document declares how many (§12.3). Everything downstream reads
+    // this map, so the rest of the graph never learns that a port can come from
+    // the setup — which is the whole point of resolving it once, here.
+    ports: new Map(resolvePorts(model, node).map((port) => [port.key, port])),
   };
 }
 

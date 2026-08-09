@@ -1,5 +1,5 @@
 import type { LintContext } from "./diagnostics";
-import type { SetupDoc } from "./schema";
+import type { NodePort, SetupDoc } from "./schema";
 import type {
   Device,
   DeviceCategory,
@@ -30,6 +30,9 @@ function port(spec: PortSpec): DeviceModelPort {
     phantom: spec.phantom ?? "none",
     busKey: spec.busKey ?? null,
     couples: spec.couples ?? null,
+    expandable: spec.expandable ?? false,
+    sourceKey: spec.sourceKey ?? null,
+    origin: spec.origin ?? false,
   };
 }
 
@@ -70,6 +73,7 @@ function model(spec: {
   internalRouting: InternalRouting;
   ports: DeviceModelPort[];
   buses?: DeviceModelBus[];
+  defaultRoutes?: DeviceModel["defaultRoutes"];
 }): DeviceModel {
   return {
     id: spec.id,
@@ -79,7 +83,7 @@ function model(spec: {
     internalRouting: spec.internalRouting,
     buses: spec.buses ?? [],
     ports: spec.ports,
-    defaultRoutes: [],
+    defaultRoutes: spec.defaultRoutes ?? [],
   };
 }
 
@@ -220,6 +224,10 @@ export const MODELS: DeviceModel[] = [
       port({ key: "hdmi_out", direction: "out", signal: "video", connector: "hdmi" }),
     ],
   }),
+  // The inputs are templates: OBS's mixer has one strip per source, and the
+  // sources are chosen on the day, not by the model (§12.2). The browser pair
+  // is one source with a picture and a sound — two ports, one `sourceKey`, so
+  // "the video is on the stream but its audio is not" stays expressible.
   model({
     id: "m_obs",
     name: "OBS Studio",
@@ -227,11 +235,47 @@ export const MODELS: DeviceModel[] = [
     internalRouting: "matrix",
     buses: [bus("program", "main"), bus("monitor", "monitor")],
     ports: [
-      port({ key: "audio_in", direction: "in", signal: "audio_digital" }),
-      port({ key: "video_in", direction: "in", signal: "video" }),
+      port({
+        key: "audio_src",
+        label: "音声ソース",
+        direction: "in",
+        signal: "audio_digital",
+        expandable: true,
+      }),
+      port({
+        key: "video_src",
+        label: "映像ソース",
+        direction: "in",
+        signal: "video",
+        expandable: true,
+      }),
+      port({
+        key: "browser_audio",
+        label: "ブラウザ音声",
+        direction: "in",
+        signal: "audio_digital",
+        expandable: true,
+        sourceKey: "browser",
+      }),
+      port({
+        key: "browser_video",
+        label: "ブラウザ映像",
+        direction: "in",
+        signal: "video",
+        expandable: true,
+        sourceKey: "browser",
+      }),
       port({ key: "stream_out", direction: "out", signal: "audio_digital", busKey: "program" }),
       port({ key: "program_video", direction: "out", signal: "video", busKey: "program" }),
       port({ key: "monitor_out", direction: "out", signal: "audio_digital", busKey: "monitor" }),
+    ],
+    // A default naming a template follows every instance of it, so a source
+    // arrives already on PROGRAM and nothing else does.
+    defaultRoutes: [
+      { inPort: "audio_src", bus: "program" },
+      { inPort: "video_src", bus: "program" },
+      { inPort: "browser_audio", bus: "program" },
+      { inPort: "browser_video", bus: "program" },
     ],
   }),
   model({
@@ -354,6 +398,17 @@ export const MODELS: DeviceModel[] = [
       port({ key: "in", direction: "in", signal: "audio_analog", connector: "trs", level: "line" }),
     ],
   }),
+];
+
+/**
+ * The sources an OBS node starts with — what `add-node` puts on it (§12.8).
+ *
+ * Spelled out rather than derived, because a test that builds a document by
+ * hand should show the instance keys its links and routing then reference.
+ */
+export const OBS_SOURCES: NodePort[] = [
+  { key: "audio_src:1", template: "audio_src" },
+  { key: "video_src:1", template: "video_src" },
 ];
 
 export const DEVICES: Device[] = [
@@ -546,6 +601,75 @@ export function speakerphoneMeeting(): SetupDoc {
       { id: "l4", from: ["n_pc", "usb_out"], to: ["n_phone", "usb_in"] },
     ],
     routing: [],
+  };
+}
+
+/**
+ * The standard hybrid layout — §12.1's table, and §12's acceptance condition.
+ *
+ * The hall mic and the meeting are two rows of OBS's mixer, so the meeting can
+ * be monitored into the room while the hall mic is not. With one 音声ソース row
+ * this was unwritable: turning MONITOR on dragged the hall mic along with it,
+ * `stream-monitor-loop` fired critical, and the fix the linter offered was to
+ * take the remote participants out of the room — the opposite of the operation
+ * anyone wanted (§4.3).
+ *
+ * One critical does remain, and it is a true one: the meeting comes out of the
+ * PA, the hall mic hears the room, and that return goes back into the meeting
+ * through the air. No routing change removes it — mix-minus works on buses, not
+ * on rooms — which is why it is `remote-echo-acoustic` and not a monitor loop.
+ */
+export function hybridMonitorMix(): SetupDoc {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      { id: "sp_hall", kind: "acoustic", label: "メインホール" },
+      { id: "sp_mtg", kind: "transport", label: "登壇 Meet", meetingKey: "meet-hybrid" },
+    ],
+    nodes: [
+      { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+      { id: "n_mixer", deviceId: "d_mixer", spaceId: "sp_hall" },
+      { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+      { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
+      {
+        id: "n_obs",
+        modelId: "m_obs",
+        hostNodeId: "n_pc",
+        ports: [
+          { key: "audio_src:1", template: "audio_src", label: "登壇者マイク" },
+          { key: "browser_audio:1", template: "browser_audio", label: "Meet", sourceId: "s1" },
+          { key: "browser_video:1", template: "browser_video", label: "Meet", sourceId: "s1" },
+        ],
+      },
+      { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+    ],
+    links: [
+      { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+      { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+      // Both apps capture from the same USB input of the PC. Device selections,
+      // not cables — nobody plugs anything in to make these true.
+      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
+      { id: "l4", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
+      // OBS grabbing the Meet window never leaves the machine, so no OS audio
+      // device is involved. §12.4.1 — an ordinary link until it has its own name.
+      { id: "l5", from: ["n_join", "spk_out"], to: ["n_obs", "browser_audio:1"] },
+      { id: "l6", from: ["n_join", "cam_video_out"], to: ["n_obs", "browser_video:1"] },
+      { id: "l7", from: ["n_obs", "monitor_out"], to: ["n_pc", "usb_out"] },
+      { id: "l8", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
+      { id: "l9", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+    ],
+    routing: [
+      // Mix-Minus: the hall mic goes out over USB, and what comes back over USB
+      // goes to the PA. Neither bus carries the other.
+      { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
+      { nodeId: "n_mixer", inPort: "usb_in", bus: "main" },
+      { nodeId: "n_obs", inPort: "audio_src:1", bus: "program" },
+      { nodeId: "n_obs", inPort: "browser_audio:1", bus: "program" },
+      { nodeId: "n_obs", inPort: "browser_video:1", bus: "program" },
+      // The cell that used to be impossible: the meeting is monitored into the
+      // room and the hall mic is not.
+      { nodeId: "n_obs", inPort: "browser_audio:1", bus: "monitor" },
+    ],
   };
 }
 

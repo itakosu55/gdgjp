@@ -57,7 +57,7 @@ describe("applyOperation", () => {
           { id: "n_mixer", deviceId: "d_mixer" },
         ],
         links: [{ id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] }],
-        routing: [{ nodeId: "n_obs", inPort: "audio_in", bus: "program" }],
+        routing: [{ nodeId: "n_obs", inPort: "audio_src:1", bus: "program" }],
       }),
       { kind: "remove-node", nodeId: "n_pc" },
     );
@@ -212,5 +212,130 @@ describe("muting one jack", () => {
     });
 
     expect(twice.nodes[0]?.isolatedPorts).toEqual(["builtin_mic", "builtin_spk"]);
+  });
+});
+
+describe("sources", () => {
+  const obs = MODELS.find((model) => model.id === "m_obs");
+  if (!obs) throw new Error("fixture missing");
+
+  const base = doc({
+    nodes: [
+      { id: "n_pc", deviceId: "d_pc" },
+      {
+        id: "n_obs",
+        modelId: "m_obs",
+        hostNodeId: "n_pc",
+        ports: [
+          { key: "audio_src:1", template: "audio_src", label: "登壇者マイク" },
+          { key: "browser_audio:1", template: "browser_audio", label: "Meet", sourceId: "s1" },
+          { key: "browser_video:1", template: "browser_video", label: "Meet", sourceId: "s1" },
+        ],
+      },
+    ],
+    links: [{ id: "l1", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] }],
+    routing: [
+      { nodeId: "n_obs", inPort: "audio_src:1", bus: "program" },
+      { nodeId: "n_obs", inPort: "browser_audio:1", bus: "monitor" },
+    ],
+  });
+
+  // A default route naming a template means "every instance of this begins
+  // here", so it has to follow each source as it is added rather than be copied
+  // once when the node appears.
+  it("gives a new source the default cells of its template", () => {
+    expect(defaultRoutesFor("n_obs", obs, [{ key: "audio_src:1", template: "audio_src" }])).toEqual(
+      [{ nodeId: "n_obs", inPort: "audio_src:1", bus: "program" }],
+    );
+  });
+
+  it("copies no template cell for a node that has no sources yet", () => {
+    expect(defaultRoutesFor("n_obs", obs)).toEqual([]);
+  });
+
+  it("appends a source and its cells", () => {
+    const next = applyOperation(base, {
+      kind: "add-source",
+      nodeId: "n_obs",
+      ports: [{ key: "audio_src:2", template: "audio_src", label: "開演前BGM" }],
+      routes: [{ nodeId: "n_obs", inPort: "audio_src:2", bus: "program" }],
+    });
+
+    expect(next.nodes[1]?.ports?.map((port) => port.key)).toEqual([
+      "audio_src:1",
+      "browser_audio:1",
+      "browser_video:1",
+      "audio_src:2",
+    ]);
+    expect(next.routing).toContainEqual({
+      nodeId: "n_obs",
+      inPort: "audio_src:2",
+      bus: "program",
+    });
+  });
+
+  // Same cascade `remove-node` performs: a cable or a matrix cell left pointing
+  // at a jack nobody can see any more is `unknown-reference` noise.
+  it("takes the cables and the matrix cells of a deleted source with it", () => {
+    const next = applyOperation(base, {
+      kind: "remove-source",
+      nodeId: "n_obs",
+      portKey: "audio_src:1",
+    });
+
+    expect(next.nodes[1]?.ports?.map((port) => port.key)).toEqual([
+      "browser_audio:1",
+      "browser_video:1",
+    ]);
+    expect(next.links).toEqual([]);
+    expect(next.routing).toEqual([{ nodeId: "n_obs", inPort: "browser_audio:1", bus: "monitor" }]);
+  });
+
+  it("deletes both halves of a browser source, because they are one source", () => {
+    const next = applyOperation(base, {
+      kind: "remove-source",
+      nodeId: "n_obs",
+      portKey: "browser_video:1",
+    });
+
+    expect(next.nodes[1]?.ports?.map((port) => port.key)).toEqual(["audio_src:1"]);
+    expect(next.routing).toEqual([{ nodeId: "n_obs", inPort: "audio_src:1", bus: "program" }]);
+  });
+
+  it("renames both halves at once, and drops the name when it is cleared", () => {
+    const named = applyOperation(base, {
+      kind: "rename-source",
+      nodeId: "n_obs",
+      portKey: "browser_audio:1",
+      label: "Zoom",
+    });
+    expect(named.nodes[1]?.ports?.filter((port) => port.sourceId === "s1")).toEqual([
+      { key: "browser_audio:1", template: "browser_audio", label: "Zoom", sourceId: "s1" },
+      { key: "browser_video:1", template: "browser_video", label: "Zoom", sourceId: "s1" },
+    ]);
+
+    const cleared = applyOperation(named, {
+      kind: "rename-source",
+      nodeId: "n_obs",
+      portKey: "browser_audio:1",
+      label: "",
+    });
+    expect(cleared.nodes[1]?.ports?.[1]).toEqual({
+      key: "browser_audio:1",
+      template: "browser_audio",
+      sourceId: "s1",
+    });
+  });
+
+  // The `clean` whitelist trap again: a node's sources are the third field that
+  // an unrelated edit would silently drop if it went unlisted.
+  it("keeps the sources when the node is updated for something else", () => {
+    const next = applyOperation(base, {
+      kind: "update-node",
+      nodeId: "n_obs",
+      patch: { label: "配信OBS" },
+    });
+
+    expect(next.nodes[1]?.ports).toHaveLength(3);
   });
 });

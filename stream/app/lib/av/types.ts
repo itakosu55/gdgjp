@@ -91,6 +91,37 @@ export type DeviceModelPort = {
    * docs/260805_stream_av_designer.md §11.
    */
   couples: CouplingDirection | null;
+  /**
+   * A template rather than a jack: the setup decides how many there are.
+   *
+   * A physical mixer's channel count is a property of the model. OBS's is not —
+   * its audio mixer has one strip per source, and the sources are chosen on the
+   * day. So the model declares *what kinds* of input exist and the document
+   * declares how many and what each one is (§12.2). Everything but `key` and
+   * `label` is inherited by the instances, which is what keeps the catalog the
+   * authority on what an OBS is.
+   */
+  expandable: boolean;
+  /**
+   * Names the source that this port is one half of, or `null`.
+   *
+   * A browser source and a screen share are one thing with a picture and a
+   * sound, and staying two ports is what keeps "the video is on the stream but
+   * its audio is not" expressible (§9.7.2). What was missing is not fewer ports
+   * but the *name of the relationship*, so the two can be added in one
+   * operation and asked one question. Ports of one model sharing a `sourceKey`
+   * are the halves of one source.
+   */
+  sourceKey: string | null;
+  /**
+   * An input that needs nothing upstream: BGM, a video file, a title card.
+   *
+   * Media playback is where a signal starts, and until now the only starting
+   * points in the graph were the far end of a cable and a space vertex. An
+   * origin port is a row in the mixer that no cable reaches and that
+   * reachability searches may start from (§12.5).
+   */
+  origin: boolean;
 };
 
 export type DeviceModel = {

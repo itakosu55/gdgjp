@@ -147,6 +147,36 @@ and `when-wired` for everything else, the default. That last one is §11.6's pri
 whose built-in mic nobody selected must not be charged a warning, but the same jack assigned to a
 join is §9.1's accident and the missing room is then real.
 
+**A port can be a template, and the setup says how many.** `DeviceModelPort.expandable` marks a
+kind of source rather than a jack; `SetupNode.ports` lists the instances (`key`, `template`, an
+optional `label`, an optional `sourceId`), and `resolvePorts(model, node)` in `av/ports.ts` is
+what turns the two into the ports everything else reads. OBS's mixer has one strip per source and
+the sources are chosen on the day, so a single 音声ソース row made the standard hybrid layout
+*unwritable*: turning MONITOR on carried the hall mics with the meeting, `stream-monitor-loop`
+fired critical, and the fix offered was to take the remote participants out of the room (design
+doc §12.1).
+
+`graph.resolveNode` and `setup-view.buildNodeInfo` **both** call `resolvePorts`, and nothing else
+may grow its own copy — the editor applies every edit twice (optimistically in the browser, then
+on the server), so a second implementation shows up as the picture disagreeing with what was
+saved. Downstream code reads `ResolvedNode.ports` / `NodeInfo.ports` and never learns that a port
+can have come from a document. Instances stand where their template stood, so the sources read
+before the outputs the way the OBS window does.
+
+Instance keys are `<template>:<n>` counting from the highest ever used, so deleting the middle
+source leaves a gap: renumbering means rewriting `links` and `routing` in the same breath, and the
+document is a single JSON column. `add-node` seeds one instance of each *unpaired* template
+(§9.3 — an OBS whose mixer has no rows is not a document anyone wanted); a paired template is one
+someone has to ask for. A default route naming a template follows every instance of it, which is
+`sourceRoutes` in `mutations.ts`. **`clean()` has to know `ports` too** — same whitelist trap as
+`isolatedPorts`.
+
+`sourceKey` (catalog) and `sourceId` (document) name the pair a browser source is: two ports,
+because "the video is on the stream but its audio is not" is the commonest accident there is and
+one merged port hides it, but one act to add, rename and delete (§12.4). The `partial-source`
+rule that reads it is still to come, as is `origin` — the column exists and `resolvePorts`
+inherits it, but nothing seeds or reads it yet (§12.5).
+
 ## Data model
 
 Three layers plus the event, all in `migrations/`:

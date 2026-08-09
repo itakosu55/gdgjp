@@ -49,6 +49,15 @@ export const structureRules: Rule = (graph, ctx) => {
           linkIds: [],
         });
         break;
+      case "unknown-port-template":
+        diagnostics.push({
+          ruleId: UNKNOWN_REFERENCE,
+          severity: "error",
+          message: `型番が持たないソース種別を参照しています (${issue.template})。`,
+          nodeIds: [issue.nodeId],
+          linkIds: [],
+        });
+        break;
       case "unknown-host":
         diagnostics.push({
           ruleId: UNKNOWN_REFERENCE,

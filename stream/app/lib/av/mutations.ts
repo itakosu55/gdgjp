@@ -1,5 +1,14 @@
 import type { Fix } from "./diagnostics";
-import type { SetupDoc, SetupLink, SetupNode, SetupRoute, Space } from "./schema";
+import { isTemplate, sourceGroup } from "./ports";
+import type {
+  NodePort,
+  PortRef,
+  SetupDoc,
+  SetupLink,
+  SetupNode,
+  SetupRoute,
+  Space,
+} from "./schema";
 import type { DeviceModel } from "./types";
 
 /**
@@ -23,6 +32,12 @@ export type SetupOperation =
       patch: Partial<Omit<SetupNode, "id" | "deviceId" | "modelId">>;
     }
   | { kind: "remove-node"; nodeId: string }
+  // A source is a row of a broadcast app's mixer, and its count belongs to the
+  // setup rather than the model (§12.3). `ports` is a list because a browser
+  // source is a picture and a sound added in one act.
+  | { kind: "add-source"; nodeId: string; ports: NodePort[]; routes: SetupRoute[] }
+  | { kind: "remove-source"; nodeId: string; portKey: string }
+  | { kind: "rename-source"; nodeId: string; portKey: string; label: string }
   | { kind: "add-link"; link: SetupLink }
   | { kind: "remove-link"; linkId: string }
   | { kind: "toggle-route"; nodeId: string; inPort: string; bus: string }
@@ -62,6 +77,65 @@ export function applyOperation(doc: SetupDoc, op: SetupOperation): SetupDoc {
 
     case "remove-node":
       return removeNodes(doc, collectNodeAndHosted(doc, op.nodeId));
+
+    case "add-source":
+      if (op.ports.length === 0) return doc;
+      return {
+        ...doc,
+        nodes: doc.nodes.map((node) =>
+          node.id === op.nodeId ? { ...node, ports: [...(node.ports ?? []), ...op.ports] } : node,
+        ),
+        routing: [...doc.routing, ...op.routes],
+      };
+
+    case "remove-source": {
+      const node = doc.nodes.find((entry) => entry.id === op.nodeId);
+      if (!node) return doc;
+      const removing = new Set(sourceGroup(node, op.portKey));
+      if (removing.size === 0) return doc;
+      const touches = (ref: PortRef) => ref[0] === op.nodeId && removing.has(ref[1]);
+      return {
+        ...doc,
+        nodes: doc.nodes.map((entry) =>
+          entry.id === op.nodeId
+            ? clean({
+                ...entry,
+                ports: (entry.ports ?? []).filter((port) => !removing.has(port.key)),
+              })
+            : entry,
+        ),
+        // A deleted source takes its cables and its matrix row with it, the
+        // cascade `remove-node` already performs. Leaving either behind would
+        // turn into `unknown-reference` noise about a jack nobody can see.
+        links: doc.links.filter((link) => !touches(link.from) && !touches(link.to)),
+        routing: doc.routing.filter(
+          (route) => !(route.nodeId === op.nodeId && removing.has(route.inPort)),
+        ),
+      };
+    }
+
+    case "rename-source": {
+      const node = doc.nodes.find((entry) => entry.id === op.nodeId);
+      if (!node) return doc;
+      const renaming = new Set(sourceGroup(node, op.portKey));
+      return {
+        ...doc,
+        nodes: doc.nodes.map((entry) =>
+          entry.id === op.nodeId
+            ? {
+                ...entry,
+                ports: (entry.ports ?? []).map((port) =>
+                  renaming.has(port.key)
+                    ? op.label
+                      ? { ...port, label: op.label }
+                      : omit(port, "label")
+                    : port,
+                ),
+              }
+            : entry,
+        ),
+      };
+    }
 
     case "add-link":
       return { ...doc, links: [...doc.links, op.link] };
@@ -118,13 +192,35 @@ function removeNodes(doc: SetupDoc, removing: Set<string>): SetupDoc {
  * The matrix a node starts with — the model's template, copied in. From then on
  * the document is authoritative and the template is never consulted again.
  */
-export function defaultRoutesFor(nodeId: string, model: DeviceModel): SetupRoute[] {
+export function defaultRoutesFor(
+  nodeId: string,
+  model: DeviceModel,
+  ports: readonly NodePort[] = [],
+): SetupRoute[] {
   if (model.internalRouting !== "matrix") return [];
-  return model.defaultRoutes.map((route) => ({
-    nodeId,
-    inPort: route.inPort,
-    bus: route.bus,
-  }));
+  const fixed = model.defaultRoutes
+    .filter((route) => !isTemplate(model, route.inPort))
+    .map((route) => ({ nodeId, inPort: route.inPort, bus: route.bus }));
+  return [...fixed, ...sourceRoutes(nodeId, model, ports)];
+}
+
+/**
+ * The cells a set of freshly created sources starts with.
+ *
+ * A default route naming a template means "every instance of this begins here",
+ * so 音声ソース → PROGRAM has to follow each source as it is added rather than
+ * be copied once when the node appears.
+ */
+export function sourceRoutes(
+  nodeId: string,
+  model: DeviceModel,
+  ports: readonly NodePort[],
+): SetupRoute[] {
+  return model.defaultRoutes.flatMap((route) =>
+    ports
+      .filter((port) => port.template === route.inPort)
+      .map((port) => ({ nodeId, inPort: port.key, bus: route.bus })),
+  );
 }
 
 /** Fixes a person (or, later, the AI repair loop) can apply without choosing anything. */
@@ -184,6 +280,7 @@ function clean(node: SetupNode): SetupNode {
   if (node.spaceId) result.spaceId = node.spaceId;
   if (node.coupling) result.coupling = node.coupling;
   if (node.isolatedPorts?.length) result.isolatedPorts = node.isolatedPorts;
+  if (node.ports?.length) result.ports = node.ports;
   if (node.hostNodeId) result.hostNodeId = node.hostNodeId;
   return result;
 }
