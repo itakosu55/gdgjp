@@ -1,6 +1,6 @@
 import { Link } from "react-router";
 import { SetupForm } from "~/components/setup-form";
-import type { Diagnostic, Severity } from "~/lib/av/diagnostics";
+import type { Diagnostic, Fix, Severity } from "~/lib/av/diagnostics";
 import { canApplyFix } from "~/lib/av/mutations";
 import { cn } from "~/lib/utils";
 
@@ -43,6 +43,23 @@ const FIX_LABEL: Record<string, string> = {
   "set-coupling": "この機材を isolated にする",
   "remove-link": "この結線を削除",
 };
+
+/**
+ * A loop names the jacks it leaves and enters a space by, so the button says
+ * which jack — "isolate the laptop" would deafen the presenter to fix a mic.
+ * Raw port keys, as `disable-route` already does with its port and bus.
+ */
+function fixButtonText(fix: Fix, nodeNames: Record<string, string>): string {
+  if (fix.kind === "disable-route") {
+    return `${FIX_LABEL[fix.kind]} (${fix.inPort} → ${fix.bus})`;
+  }
+  if (fix.kind === "set-coupling") {
+    const name = nodeNames[fix.nodeId];
+    if (!fix.portKey) return name ? `${FIX_LABEL[fix.kind]} (${name})` : FIX_LABEL[fix.kind];
+    return `この端子を isolated にする (${name ? `${name} / ` : ""}${fix.portKey})`;
+  }
+  return FIX_LABEL[fix.kind] ?? fix.kind;
+}
 
 export function LintPanel({
   diagnostics,
@@ -116,11 +133,7 @@ export function LintPanel({
                       type="submit"
                       className="rounded-md border border-border bg-background px-2 py-1 text-xs hover:bg-secondary"
                     >
-                      {FIX_LABEL[fix.kind] ?? fix.kind}
-                      {fix.kind === "disable-route" ? ` (${fix.inPort} → ${fix.bus})` : null}
-                      {fix.kind === "set-coupling" && nodeNames[fix.nodeId]
-                        ? ` (${nodeNames[fix.nodeId]})`
-                        : null}
+                      {fixButtonText(fix, nodeNames)}
                     </button>
                   </SetupForm>
                 ))}

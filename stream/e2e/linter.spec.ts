@@ -82,8 +82,9 @@ test("reports a loop closed through a second join of the same meeting", async ({
   const found = diagnostic(page, "transport-echo-loop");
   await expect(found).toHaveAttribute("data-severity", "critical");
   // The presenter's own laptop is the machine that appears on no patch sheet,
-  // and naming it is the whole point of the rule.
-  await expect(found).toContainText("E2E 内蔵マイク");
+  // and naming it is the whole point of the rule. Its mic is a port of it now,
+  // so the laptop itself is what the path names.
+  await expect(found).toContainText("E2E 登壇者ノートPC");
   await expect(found).toContainText("E2E 会場スピーカー");
   // Not oscillation in the room: the two must not both be reported.
   await expect(ruleIds(page)).resolves.not.toContain("acoustic-feedback-loop");
@@ -121,7 +122,7 @@ test("the diagram draws each app inside its machine and each machine in its room
   await page.goto(setupUrl("e2e_setup_transport", "diagram"));
 
   const laptop = page.locator('[data-node-key="n6"]').locator("rect").first();
-  const join = page.locator('[data-node-key="n8"]');
+  const join = page.locator('[data-node-key="n7"]');
   await expect(join).toHaveAttribute("data-parent-key", "n6");
 
   // `.first()`, because the frame's caption strip is a second, transparent

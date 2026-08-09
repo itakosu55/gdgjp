@@ -91,6 +91,37 @@ describe("space coupling", () => {
     );
   });
 
+  // What happens on the day is "mute the presenter's mic, let them hear" —
+  // §4.3 requires the offered fix be an operation someone can really perform,
+  // and a node-wide `isolated` on a laptop is not that one (§11.6).
+  it("mutes one face of a device and leaves the other coupled", () => {
+    const graph = build({
+      spaces: [{ id: "sp_room", kind: "acoustic", label: "会議室" }],
+      nodes: [{ id: "n_phone", deviceId: "d_speakerphone", spaceId: "sp_room" }],
+    });
+    const muted = build({
+      spaces: [{ id: "sp_room", kind: "acoustic", label: "会議室" }],
+      nodes: [
+        {
+          id: "n_phone",
+          deviceId: "d_speakerphone",
+          spaceId: "sp_room",
+          isolatedPorts: ["usb_out"],
+        },
+      ],
+    });
+
+    expect(
+      hasEdge(graph, spaceVertexId("sp_room"), portVertexId("n_phone", "usb_out"), "space"),
+    ).toBe(true);
+    expect(
+      hasEdge(muted, spaceVertexId("sp_room"), portVertexId("n_phone", "usb_out"), "space"),
+    ).toBe(false);
+    expect(
+      hasEdge(muted, portVertexId("n_phone", "usb_in"), spaceVertexId("sp_room"), "space"),
+    ).toBe(true);
+  });
+
   it("suppresses coupling for an isolated mic", () => {
     const graph = build({
       spaces: [HALL],

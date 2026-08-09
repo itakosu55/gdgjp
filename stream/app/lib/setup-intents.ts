@@ -152,6 +152,13 @@ export function applyIntent(doc: SetupDoc, form: FormData, catalog: IntentCatalo
             spaceId: spaceId ?? undefined,
             coupling: coupling === "isolated" ? "isolated" : undefined,
             hostNodeId: hostNodeId ?? undefined,
+            // Unchecked boxes send nothing, so an absent list is indistinguishable
+            // from "all cleared" — hence the marker. Without it, a form that never
+            // rendered the checkboxes (a node with no jack facing a space) would
+            // silently un-mute whatever a fix had muted.
+            ...(form.has("isolatedPortsForm")
+              ? { isolatedPorts: form.getAll("isolatedPorts").map((value) => text(value)) }
+              : {}),
           },
         }),
       );

@@ -154,4 +154,63 @@ describe("software nodes survive an edit", () => {
       hostNodeId: "n_pc",
     });
   });
+
+  // Same trap, and the one a muted jack falls into: `clean`'s whitelist has to
+  // learn every new field or an unrelated edit silently un-mutes the mic.
+  it("keeps muted jacks when a node is updated", () => {
+    const doc: SetupDoc = {
+      schemaVersion: 1,
+      spaces: [],
+      nodes: [{ id: "n_laptop", deviceId: "d_laptop", isolatedPorts: ["builtin_mic"] }],
+      links: [],
+      routing: [],
+    };
+
+    const next = applyOperation(doc, {
+      kind: "update-node",
+      nodeId: "n_laptop",
+      patch: { label: "登壇者PC" },
+    });
+
+    expect(next.nodes[0]?.isolatedPorts).toEqual(["builtin_mic"]);
+  });
+});
+
+describe("muting one jack", () => {
+  const laptop: SetupDoc = {
+    schemaVersion: 1,
+    spaces: [],
+    nodes: [{ id: "n_laptop", deviceId: "d_laptop" }],
+    links: [],
+    routing: [],
+  };
+
+  it("adds the port rather than isolating the whole machine", () => {
+    const next = applyFix(laptop, {
+      kind: "set-coupling",
+      nodeId: "n_laptop",
+      coupling: "isolated",
+      portKey: "builtin_mic",
+    });
+
+    expect(next.nodes[0]?.isolatedPorts).toEqual(["builtin_mic"]);
+    expect(next.nodes[0]?.coupling).toBeUndefined();
+  });
+
+  it("accumulates instead of replacing, so muting the speaker keeps the mic muted", () => {
+    const once = applyFix(laptop, {
+      kind: "set-coupling",
+      nodeId: "n_laptop",
+      coupling: "isolated",
+      portKey: "builtin_mic",
+    });
+    const twice = applyFix(once, {
+      kind: "set-coupling",
+      nodeId: "n_laptop",
+      coupling: "isolated",
+      portKey: "builtin_spk",
+    });
+
+    expect(twice.nodes[0]?.isolatedPorts).toEqual(["builtin_mic", "builtin_spk"]);
+  });
 });

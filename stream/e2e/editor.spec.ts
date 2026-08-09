@@ -366,6 +366,29 @@ test("applying a fix from the dock keeps the page where it was", async ({ page }
 });
 
 /**
+ * §11.6: what people actually do on the day is mute the presenter's mic and
+ * leave their sound on. A node-wide isolated cannot say that now the laptop is
+ * one node carrying both transducers, so the inspector mutes a single jack.
+ */
+test("muting one jack of the presenter's laptop clears the transport echo", async ({ page }) => {
+  await page.goto(setupUrl("e2e_setup_mute", undefined, "n6"));
+  await expect(diagnostic(page, "transport-echo-loop")).toBeVisible();
+
+  const form = formWith(page, "#space-n6");
+  const mic = form.getByRole("checkbox", { name: "内蔵マイク" });
+  const speaker = form.getByRole("checkbox", { name: "内蔵スピーカー" });
+  await expect(speaker).not.toBeChecked();
+
+  await mic.check();
+  await saving(page, () => form.getByRole("button", { name: "保存" }).click());
+
+  await expect(diagnostic(page, "transport-echo-loop")).toHaveCount(0);
+  // The other face is untouched: the presenter can still hear the meeting.
+  await expect(speaker).not.toBeChecked();
+  await expect(mic).toBeChecked();
+});
+
+/**
  * The shell itself. The claim being tested is that one implementation covers
  * every width: the same tree, inspector and dock, reflowed by two container
  * queries rather than by a second narrow-screen code path.

@@ -66,8 +66,22 @@ export const setupNodeSchema = z
      * about the hall, and the diagram draws each room round what is in it.
      */
     spaceId: id.optional(),
-    /** `isolated` suppresses space coupling: headsets, in-ears, stream-only monitors. */
+    /**
+     * `isolated` suppresses space coupling for the whole node: headsets,
+     * in-ears, stream-only monitors. It is the shorthand for "every jack", and
+     * for a headset mic that is exactly right.
+     */
     coupling: z.enum(["open", "isolated"]).optional(),
+    /**
+     * Jacks muted one at a time, by port key.
+     *
+     * Once a laptop is one node with a built-in mic and a built-in speaker on
+     * it, muting the node is too blunt: what actually happens on the day is
+     * "mute the presenter's mic but let them hear", and the same is true of a
+     * speakerphone. §4.3 requires that a fix the linter offers be an operation
+     * a person can really perform, so the mute has to be per jack.
+     */
+    isolatedPorts: z.array(z.string().min(1).max(64)).optional(),
     /** Set on software nodes (OBS, Meet) to the computer node they run on. */
     hostNodeId: id.optional(),
   })

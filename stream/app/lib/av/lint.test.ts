@@ -197,8 +197,9 @@ describe("transport echo", () => {
     expect(loop).toBeDefined();
     expect(loop?.severity).toBe("critical");
     // The presenter's own laptop is the machine nobody wrote down, and naming
-    // it is the whole point of the rule.
-    expect(loop?.nodeIds).toContain("n_laptop_mic");
+    // it is the whole point of the rule. Its mic is a port of it now, so the
+    // laptop itself is what the path names.
+    expect(loop?.nodeIds).toContain("n_laptop");
     expect(loop?.nodeIds).toContain("n_speaker");
     // Not oscillation in the room; §9.7.3 keeps the two apart.
     expect(ruleIds(found)).not.toContain("acoustic-feedback-loop");
@@ -214,6 +215,37 @@ describe("transport echo", () => {
     // thing this rule exists to do.
     expect(loop?.message).toContain("Google Meet (登壇者ノートPC)");
     expect(loop?.message).toContain("Google Meet (配信PC)");
+  });
+
+  // §11.6's requirement, end to end: the actual fix on the day is muting the
+  // presenter's mic, not deafening their laptop, and the loop has to clear from
+  // exactly that.
+  it("clears when only the presenter's built-in mic is muted", () => {
+    const base = twoJoinsInOneHall();
+    const found = lint(
+      {
+        ...base,
+        nodes: base.nodes.map((node) =>
+          node.id === "n_laptop" ? { ...node, isolatedPorts: ["builtin_mic"] } : node,
+        ),
+      },
+      testContext(),
+    );
+
+    expect(ruleIds(found)).not.toContain("transport-echo-loop");
+  });
+
+  it("offers that mute as a fix, naming the jack rather than the laptop", () => {
+    const loop = lint(twoJoinsInOneHall(), testContext()).find(
+      (d) => d.ruleId === "transport-echo-loop",
+    );
+
+    expect(loop?.fixes).toContainEqual({
+      kind: "set-coupling",
+      nodeId: "n_laptop",
+      coupling: "isolated",
+      portKey: "builtin_mic",
+    });
   });
 
   it("couples two rooms that share nothing but a meeting", () => {
@@ -232,7 +264,7 @@ describe("transport echo", () => {
       {
         ...single,
         nodes: single.nodes.filter((node) => node.id !== "n_join_laptop"),
-        links: single.links.filter((link) => link.id !== "l6"),
+        links: single.links.filter((link) => link.id !== "l5"),
       },
       testContext(),
     );

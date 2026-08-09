@@ -28,7 +28,6 @@ const MODELS = {
   pc: "mdl_seed_pc",
   obs: "mdl_seed_obs",
   meet: "mdl_seed_meet",
-  builtinMic: "mdl_seed_builtin_mic",
 } as const;
 
 export const DEVICES = [
@@ -37,7 +36,6 @@ export const DEVICES = [
   { id: "e2e_dev_speaker", modelId: MODELS.speaker, name: "E2E 会場スピーカー" },
   { id: "e2e_dev_pc", modelId: MODELS.pc, name: "E2E 配信PC" },
   { id: "e2e_dev_laptop", modelId: MODELS.pc, name: "E2E 登壇者ノートPC" },
-  { id: "e2e_dev_builtin_mic", modelId: MODELS.builtinMic, name: "E2E 内蔵マイク" },
   // Software nodes reference `modelId` now, so no OBS or Meet unit is needed.
   // This one row stays so `catalog.spec.ts` still has a ledger entry whose
   // model is software, proving an old `deviceId` reference keeps resolving.
@@ -151,16 +149,16 @@ function transportEchoDoc() {
       { id: "n4", deviceId: "e2e_dev_pc", spaceId: "sp1" },
       { id: "n5", modelId: MODELS.meet, hostNodeId: "n4", spaceId: "sp2" },
       { id: "n6", deviceId: "e2e_dev_laptop", spaceId: "sp1" },
-      { id: "n7", deviceId: "e2e_dev_builtin_mic", spaceId: "sp1" },
-      { id: "n8", modelId: MODELS.meet, hostNodeId: "n6", spaceId: "sp2" },
+      { id: "n7", modelId: MODELS.meet, hostNodeId: "n6", spaceId: "sp2" },
     ],
     links: [
       { id: "l1", from: ["n1", "out"], to: ["n2", "ch1"] },
       { id: "l2", from: ["n2", "main_out"], to: ["n3", "in"] },
       { id: "l3", from: ["n5", "spk_out"], to: ["n4", "usb_out"] },
       { id: "l4", from: ["n4", "usb_out"], to: ["n2", "usb_in"] },
-      { id: "l5", from: ["n7", "out"], to: ["n6", "line_in"] },
-      { id: "l6", from: ["n6", "line_in"], to: ["n8", "mic_in"] },
+      // The built-in mic is a port of the laptop, so the presenter's machine
+      // costs one entry: which jack their Meet listens on.
+      { id: "l5", from: ["n6", "builtin_mic"], to: ["n7", "mic_in"] },
     ],
     routing: [{ nodeId: "n2", inPort: "usb_in", bus: "main" }],
   };
@@ -270,6 +268,13 @@ export const SETUPS = [
   { id: "e2e_setup_assign", eventId: EVENT.id, name: "E2E 割り当てドラッグ", doc: unwiredDoc() },
   // Mutated: a fix is applied from the dock and the page must stay where it is.
   { id: "e2e_setup_live", eventId: EVENT.id, name: "E2E 即時反映", doc: howlingDoc() },
+  // Mutated: one jack of the presenter's laptop is muted from the inspector.
+  {
+    id: "e2e_setup_mute",
+    eventId: EVENT.id,
+    name: "E2E 端子ミュート",
+    doc: transportEchoDoc(),
+  },
   // Lives on the event whose gear list event.spec.ts is allowed to change.
   {
     id: "e2e_setup_gear",

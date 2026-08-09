@@ -462,10 +462,14 @@ function collectSpaceMembers(
 
   const members: SpaceMembers = new Map();
   for (const resolved of nodes.values()) {
+    // Node-wide `isolated` is the shorthand for "every jack" — right for a
+    // headset — and `isolatedPorts` is the per-jack form the day actually
+    // needs: mute the presenter's mic, let them keep hearing (§11.6).
     if (resolved.node.coupling === "isolated") continue;
+    const muted = new Set(resolved.node.isolatedPorts ?? []);
 
     for (const port of resolved.ports.values()) {
-      if (!port.couples) continue;
+      if (!port.couples || muted.has(port.key)) continue;
       for (const { space, media } of spacesForPort(resolved.node, port, spaces, byPlace)) {
         let byNode = members.get(space.id);
         if (!byNode) {

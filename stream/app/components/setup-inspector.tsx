@@ -132,6 +132,7 @@ export function SetupInspector({
             ))}
           </select>
         </Field>
+        <MutedPorts info={info} />
         <Field
           label="ホスト PC"
           htmlFor={`host-${info.node.id}`}
@@ -210,6 +211,43 @@ export function SetupInspector({
         </button>
       </SetupForm>
     </div>
+  );
+}
+
+/**
+ * Per-jack mutes, for the devices that have more than one face.
+ *
+ * A laptop is a mic and a speaker on one node, and so is a speakerphone, so the
+ * node-wide `isolated` above cannot express what actually happens on the day:
+ * mute the presenter's mic and let them keep hearing (§11.6). Only jacks that
+ * face a space are listed — the rest have nothing to mute.
+ */
+function MutedPorts({ info }: { info: NodeInfo }) {
+  const facing = (info.model?.ports ?? []).filter((port) => port.couples !== null);
+  if (facing.length === 0) return null;
+  const muted = new Set(info.node.isolatedPorts ?? []);
+
+  return (
+    <fieldset className="flex flex-col gap-1.5">
+      <legend className="mb-1 text-xs font-medium">端子ごとのミュート</legend>
+      {/* Tells the action that this form carried the list at all; see applyIntent. */}
+      <input type="hidden" name="isolatedPortsForm" value="1" />
+      {facing.map((port) => (
+        <label key={port.key} className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            name="isolatedPorts"
+            value={port.key}
+            defaultChecked={muted.has(port.key)}
+            className="size-3.5 accent-primary"
+          />
+          <span>{port.label}</span>
+          <span className="text-muted-foreground">
+            {port.couples === "from_space" ? "空間から拾う" : "空間へ出す"}
+          </span>
+        </label>
+      ))}
+    </fieldset>
   );
 }
 

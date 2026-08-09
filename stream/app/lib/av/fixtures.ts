@@ -182,12 +182,24 @@ export const MODELS: DeviceModel[] = [
       }),
     ],
   }),
+  // A laptop's built-in transducers are ports of the laptop, not nodes beside
+  // it: they cannot be carried out of the building on their own (§11.7), and
+  // the cables that used to join them did not physically exist. No connector
+  // and no level — there is no jack to mismatch. `internalRouting` stays `none`
+  // so the machine never routes its own mic into its own speaker.
   model({
     id: "m_pc",
     name: "Streaming Laptop",
     category: "computer",
     internalRouting: "none",
     ports: [
+      port({
+        key: "builtin_mic",
+        direction: "in",
+        signal: "audio_analog",
+        couples: "from_space",
+      }),
+      port({ key: "builtin_spk", direction: "out", signal: "audio_analog", couples: "to_space" }),
       port({ key: "usb_in", direction: "in", signal: "audio_digital", connector: "usb_b" }),
       port({ key: "usb_out", direction: "out", signal: "audio_digital", connector: "usb_b" }),
       port({
@@ -239,24 +251,6 @@ export const MODELS: DeviceModel[] = [
     category: "software_conferencing",
     internalRouting: "none",
     ports: joinPorts(),
-  }),
-  // A laptop's built-in transducers are separate nodes, because `computer` has
-  // no space coupling and so cannot touch a room by itself. Modelling them is
-  // what makes a presenter's own machine visible on the patch sheet at all.
-  // No connector and no level: there is no jack to mismatch.
-  model({
-    id: "m_builtin_mic",
-    name: "PC 内蔵マイク",
-    category: "mic",
-    internalRouting: "none",
-    ports: [port({ key: "out", direction: "out", signal: "audio_analog", couples: "from_space" })],
-  }),
-  model({
-    id: "m_builtin_spk",
-    name: "PC 内蔵スピーカー",
-    category: "speaker",
-    internalRouting: "none",
-    ports: [port({ key: "in", direction: "in", signal: "audio_analog", couples: "to_space" })],
   }),
   /**
    * One unit that is both a mic and a speaker — §11.3's case, and the commonest
@@ -372,8 +366,6 @@ export const DEVICES: Device[] = [
   { id: "d_speaker2", modelId: "m_speaker", name: "別室スピーカー" },
   { id: "d_pc", modelId: "m_pc", name: "配信PC" },
   { id: "d_laptop", modelId: "m_pc", name: "登壇者ノートPC" },
-  { id: "d_builtin_mic", modelId: "m_builtin_mic", name: "ノートPC内蔵マイク" },
-  { id: "d_builtin_spk", modelId: "m_builtin_spk", name: "ノートPC内蔵スピーカー" },
   { id: "d_speakerphone", modelId: "m_speakerphone", name: "USBスピーカーフォン" },
   { id: "d_obs", modelId: "m_obs", name: "OBS" },
   // Software is referenced by `modelId` now. This row stays so one test still
@@ -413,7 +405,6 @@ export function twoJoinsInOneHall(): SetupDoc {
       { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
       { id: "n_join_stream", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
       { id: "n_laptop", deviceId: "d_laptop", spaceId: "sp_hall" },
-      { id: "n_laptop_mic", deviceId: "d_builtin_mic", spaceId: "sp_hall" },
       { id: "n_join_laptop", modelId: "m_meet", hostNodeId: "n_laptop", spaceId: "sp_mtg" },
     ],
     links: [
@@ -421,8 +412,10 @@ export function twoJoinsInOneHall(): SetupDoc {
       { id: "l2", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
       { id: "l3", from: ["n_join_stream", "spk_out"], to: ["n_pc", "usb_out"] },
       { id: "l4", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
-      { id: "l5", from: ["n_laptop_mic", "out"], to: ["n_laptop", "line_in"] },
-      { id: "l6", from: ["n_laptop", "line_in"], to: ["n_join_laptop", "mic_in"] },
+      // One entry, not three: the built-in mic is a port of the laptop, so all
+      // that is left to write down is which jack the presenter's Meet listens
+      // on (§11.1).
+      { id: "l5", from: ["n_laptop", "builtin_mic"], to: ["n_join_laptop", "mic_in"] },
     ],
     routing: [{ nodeId: "n_mixer", inPort: "usb_in", bus: "main" }],
   };
@@ -511,16 +504,15 @@ export function laptopOnlyMeeting(): SetupDoc {
     schemaVersion: 1,
     spaces: [{ id: "sp_hall", kind: "acoustic", label: "メインホール" }],
     nodes: [
-      { id: "n_laptop", deviceId: "d_laptop" },
-      { id: "n_laptop_mic", deviceId: "d_builtin_mic", spaceId: "sp_hall" },
-      { id: "n_laptop_spk", deviceId: "d_builtin_spk", spaceId: "sp_hall" },
+      { id: "n_laptop", deviceId: "d_laptop", spaceId: "sp_hall" },
       { id: "n_join", modelId: "m_meet", hostNodeId: "n_laptop" },
     ],
+    // §11.1's table, after the built-in transducers became ports: two ledger
+    // rows and two non-existent cables are gone, and what is left is the two
+    // device selections — which is the only part anybody actually chose.
     links: [
-      { id: "l1", from: ["n_join", "spk_out"], to: ["n_laptop", "headphone_out"] },
-      { id: "l2", from: ["n_laptop", "headphone_out"], to: ["n_laptop_spk", "in"] },
-      { id: "l3", from: ["n_laptop_mic", "out"], to: ["n_laptop", "line_in"] },
-      { id: "l4", from: ["n_laptop", "line_in"], to: ["n_join", "mic_in"] },
+      { id: "l1", from: ["n_join", "spk_out"], to: ["n_laptop", "builtin_spk"] },
+      { id: "l2", from: ["n_laptop", "builtin_mic"], to: ["n_join", "mic_in"] },
     ],
     routing: [],
   };

@@ -122,6 +122,22 @@ hall's two spaces the form happened to store does not change the graph. A meetin
 place (`placeKeyOf` returns `null` for `transport`), so a join resolves to its transport space
 directly and no medium ever has two candidates.
 
+**Muting is per jack.** `SetupNode.isolatedPorts` lists the jacks that are off; node-wide
+`coupling: "isolated"` stays as the shorthand for all of them, which is what a headset wants.
+The per-jack form is not a nicety: a laptop is one node whose built-in mic *and* speaker both
+sit on a transport loop, so isolating the node would deafen the presenter to fix a mic, and §4.3
+requires the offered fix be the operation people actually perform. `isolationFixes` therefore
+names the jacks the cycle enters and leaves a space by, not nodes picked by category. **Add any
+new `SetupNode` field to `clean()` in `mutations.ts`** — it rebuilds from a whitelist, so a
+field it does not know is dropped on the next unrelated edit.
+
+`mdl_seed_pc` carries `builtin_mic` (in, `from_space`) and `builtin_spk` (out, `to_space`), and
+the separate 内蔵マイク / 内蔵スピーカー models are deleted (migration 0006). That took a
+laptop from four entries — two of them cables that do not physically exist — down to the two
+device selections. `isAecCancellable` got simpler with it: ownership is a fact now, so it checks
+that every port on the path belongs to the join or its host instead of matching a six-node
+shape.
+
 `space-kind-mismatch` is gone with it — a mic in a place that has only a screen now reaches no
 space, which is the same hole as leaving 所在 blank, so `space-unassigned` says it. When that
 warning fires is `spaceNeedOf(category)`: `always` for gear that *is* a transducer (mic, speaker,

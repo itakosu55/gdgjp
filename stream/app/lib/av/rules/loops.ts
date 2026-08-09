@@ -3,7 +3,6 @@ import { describeNode, describePath, routeFixes } from "../diagnostics";
 import type { BuiltGraph, GraphEdge, ResolvedNode } from "../graph";
 import { portVertices } from "../graph";
 import { findCycle, findPath, pathNodeIds } from "../paths";
-import type { DeviceCategory } from "../types";
 
 /**
  * Every rule here is one cycle search over the same graph.
@@ -79,7 +78,7 @@ export const loopRules: Rule = (graph) => {
     const acoustic = findPath(graph, outputs, inputs, { medium: "audio" });
     if (!acoustic) continue;
     const nodeIds = pathNodeIds(graph, acoustic);
-    const cancellable = isAecCancellable(graph, resolved, acoustic, nodeIds);
+    const cancellable = isAecCancellable(graph, resolved, acoustic);
     diagnostics.push({
       ruleId: "remote-echo-acoustic",
       severity: cancellable ? "warn" : "critical",
@@ -89,7 +88,7 @@ export const loopRules: Rule = (graph) => {
       nodeIds,
       linkIds: linkIdsOf(acoustic),
       cycle: acoustic,
-      fixes: isolationFixes(graph, nodeIds),
+      fixes: isolationFixes(graph, acoustic),
     });
   }
 
@@ -113,7 +112,7 @@ function acousticDiagnostic(graph: BuiltGraph, cycle: GraphEdge[]): Diagnostic {
   const viaBroadcast = nodeIds.some(
     (id) => graph.nodes.get(id)?.model.category === "software_broadcast",
   );
-  const fixes: Fix[] = [...routeFixes(graph, cycle), ...isolationFixes(graph, nodeIds)];
+  const fixes: Fix[] = [...routeFixes(graph, cycle), ...isolationFixes(graph, cycle)];
 
   if (viaBroadcast) {
     return {
@@ -172,10 +171,7 @@ function transportDiagnostic(graph: BuiltGraph, cycle: GraphEdge[]): Diagnostic 
     linkIds: linkIdsOf(cycle),
     spaceIds,
     cycle,
-    fixes: [
-      ...routeFixes(graph, cycle),
-      ...isolationFixes(graph, nodeIds, ["mic", "speaker", "software_conferencing"]),
-    ],
+    fixes: [...routeFixes(graph, cycle), ...isolationFixes(graph, cycle)],
   };
 }
 
@@ -194,30 +190,34 @@ function transportCycle(graph: BuiltGraph, spaceId: string): GraphEdge[] | null 
  * Is this the echo the conferencing app's own canceller removes?
  *
  * AEC subtracts what the app itself played, out of the device it played it on.
- * That reference exists exactly when the return trip is this machine's own
- * speaker and its own mic and nothing else. The moment a mixer or a house PA
- * joins the path the signal has been re-timed and re-mixed, the reference no
- * longer matches, and cancellation fails — so anything longer stays critical.
- * The shape of the path decides it; no new field on the model is needed.
+ * That reference exists exactly when the return trip stayed inside this machine
+ * — its own built-in speaker, its own built-in mic — and went nowhere else. The
+ * moment a mixer or a house PA joins the path the signal has been re-timed and
+ * re-mixed, the reference no longer matches, and cancellation fails.
+ *
+ * Since a built-in transducer became a *port of the machine* (§11.4), ownership
+ * is a fact the path states outright rather than something inferred from its
+ * shape. The old version counted six nodes and checked their categories,
+ * because a cable drawn straight from a join to a speaker node was expressible
+ * and proved nothing about who owned that speaker. There is nothing left to
+ * infer: every port on the path either belongs to the app or to the machine it
+ * runs on, or the path left the machine.
  */
 function isAecCancellable(
   graph: BuiltGraph,
   join: ResolvedNode,
   path: readonly GraphEdge[],
-  nodeIds: readonly string[],
 ): boolean {
   const host = join.node.hostNodeId;
   if (!host) return false;
-  if (nodeIds.length !== 6) return false;
 
-  const [start, out, speaker, mic, back, end] = nodeIds;
-  if (start !== join.id || end !== join.id) return false;
-  // Both trips must go through the join's own machine. A cable drawn straight
-  // from a join to a speaker is expressible but does not prove the speaker
-  // belongs to that machine, so it must not be downgraded.
-  if (out !== host || back !== host) return false;
-  if (graph.nodes.get(speaker)?.model.category !== "speaker") return false;
-  if (graph.nodes.get(mic)?.model.category !== "mic") return false;
+  for (const edge of path) {
+    for (const vertexId of [edge.from, edge.to]) {
+      const vertex = graph.vertices.get(vertexId);
+      if (vertex?.type !== "port") continue;
+      if (vertex.nodeId !== join.id && vertex.nodeId !== host) return false;
+    }
+  }
 
   // Into one room and straight back out of the same room.
   const hops = path.filter((edge) => edge.kind === "space");
@@ -238,20 +238,36 @@ function spaceIdsOf(cycle: readonly GraphEdge[]): string[] {
 }
 
 /**
- * Suggest isolating the gear a loop passes through. Offering it on a join is
- * only sensible for a transport loop, where "mute and deafen that laptop" is
- * the actual fix on the day; on plain howling it would be nonsense.
+ * Suggest muting the jacks the loop actually leaves and enters the space by.
+ *
+ * This used to pick whole nodes by category, which was the only thing it could
+ * do while a device coupled as a unit. Now that the jack is what couples, the
+ * jack is what the fix names — and it has to be: a laptop is one node whose mic
+ * and speaker are both on the loop, and "isolate the laptop" would deafen the
+ * presenter to fix a mic. What people do on the day is mute the mic and leave
+ * the sound on (§11.6), and §4.3 says the offered fix must be that operation.
+ *
+ * Every jack on the cycle is offered rather than a guess at the right one:
+ * which end to cut is the person's decision, and both ends are real.
  */
-function isolationFixes(
-  graph: BuiltGraph,
-  nodeIds: readonly string[],
-  categories: readonly DeviceCategory[] = ["mic", "speaker"],
-): Fix[] {
+function isolationFixes(graph: BuiltGraph, cycle: readonly GraphEdge[]): Fix[] {
   const fixes: Fix[] = [];
-  for (const id of nodeIds) {
-    const category = graph.nodes.get(id)?.model.category;
-    if (!category || !categories.includes(category)) continue;
-    fixes.push({ kind: "set-coupling", nodeId: id, coupling: "isolated" });
+  const seen = new Set<string>();
+  for (const edge of cycle) {
+    if (edge.kind !== "space") continue;
+    for (const vertexId of [edge.from, edge.to]) {
+      const vertex = graph.vertices.get(vertexId);
+      if (vertex?.type !== "port") continue;
+      const key = `${vertex.nodeId}::${vertex.portKey}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      fixes.push({
+        kind: "set-coupling",
+        nodeId: vertex.nodeId,
+        coupling: "isolated",
+        portKey: vertex.portKey,
+      });
+    }
   }
   return fixes;
 }

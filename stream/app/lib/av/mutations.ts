@@ -142,12 +142,24 @@ export function applyFix(doc: SetupDoc, fix: Fix): SetupDoc {
             !(route.nodeId === fix.nodeId && route.inPort === fix.inPort && route.bus === fix.bus),
         ),
       };
-    case "set-coupling":
+    case "set-coupling": {
+      if (!fix.portKey) {
+        return applyOperation(doc, {
+          kind: "update-node",
+          nodeId: fix.nodeId,
+          patch: { coupling: fix.coupling },
+        });
+      }
+      const node = doc.nodes.find((entry) => entry.id === fix.nodeId);
+      if (!node) return doc;
+      const isolated = node.isolatedPorts ?? [];
+      if (isolated.includes(fix.portKey)) return doc;
       return applyOperation(doc, {
         kind: "update-node",
         nodeId: fix.nodeId,
-        patch: { coupling: fix.coupling },
+        patch: { isolatedPorts: [...isolated, fix.portKey] },
       });
+    }
     case "remove-link":
       return applyOperation(doc, { kind: "remove-link", linkId: fix.linkId });
     // `assign-space` and `add-device` need a human to pick which space or which
@@ -171,6 +183,7 @@ function clean(node: SetupNode): SetupNode {
   if (node.label) result.label = node.label;
   if (node.spaceId) result.spaceId = node.spaceId;
   if (node.coupling) result.coupling = node.coupling;
+  if (node.isolatedPorts?.length) result.isolatedPorts = node.isolatedPorts;
   if (node.hostNodeId) result.hostNodeId = node.hostNodeId;
   return result;
 }

@@ -12,7 +12,8 @@ export type Severity = "critical" | "error" | "warn" | "info";
  */
 export type Fix =
   | { kind: "disable-route"; nodeId: string; inPort: string; bus: string }
-  | { kind: "set-coupling"; nodeId: string; coupling: "isolated" }
+  /** With `portKey`, mutes that one jack; without, the whole node. */
+  | { kind: "set-coupling"; nodeId: string; coupling: "isolated"; portKey?: string }
   | { kind: "assign-space"; nodeId: string }
   | { kind: "remove-link"; linkId: string }
   | { kind: "add-device"; category: DeviceCategory; reason: string };
