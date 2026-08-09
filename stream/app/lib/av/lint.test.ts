@@ -288,6 +288,106 @@ describe("stream coverage", () => {
   });
 });
 
+describe("who hears it", () => {
+  const MEETING = { id: "sp_mtg", kind: "transport", label: "登壇 Meet" } as const;
+
+  // The hall mic is on the stream and nothing else: it goes to the USB bus, the
+  // mixer's USB send feeds the streaming PC, and OBS routes it to PROGRAM.
+  const onStreamOnly = {
+    nodes: [
+      { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+      { id: "n_mixer", deviceId: "d_mixer" },
+      { id: "n_pc", deviceId: "d_pc" },
+      { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
+    ],
+    links: [
+      { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+      { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_in"] },
+    ] satisfies SetupDoc["links"],
+    routing: [
+      { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
+      { nodeId: "n_obs", inPort: "audio_in", bus: "program" },
+    ],
+  };
+
+  it("reports a source that is on the stream but never reaches the meeting", () => {
+    const found = lint(
+      doc({
+        spaces: [HALL, MEETING],
+        nodes: [
+          ...onStreamOnly.nodes,
+          { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+        ],
+        links: onStreamOnly.links,
+        routing: onStreamOnly.routing,
+      }),
+      testContext(),
+    );
+
+    const finding = found.find((d) => d.ruleId === "source-not-reaching-remote");
+    expect(finding?.severity).toBe("warn");
+    expect(finding?.nodeIds).toEqual(["n_mic"]);
+    // The stream is not silent, so the older rule has nothing to say and this
+    // one is not a second wording of it.
+    expect(ruleIds(found)).not.toContain("no-audio-to-stream");
+  });
+
+  it("clears once the mic is also fed into the join", () => {
+    const found = lint(
+      doc({
+        spaces: [HALL, MEETING],
+        nodes: [
+          ...onStreamOnly.nodes,
+          { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+        ],
+        links: [
+          ...onStreamOnly.links,
+          { id: "l4", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
+        ],
+        routing: onStreamOnly.routing,
+      }),
+      testContext(),
+    );
+
+    expect(ruleIds(found)).not.toContain("source-not-reaching-remote");
+  });
+
+  it("says nothing about the meeting when nobody has joined one", () => {
+    const found = lint(
+      doc({ spaces: [HALL], ...onStreamOnly, links: onStreamOnly.links }),
+      testContext(),
+    );
+
+    expect(ruleIds(found)).not.toContain("source-not-reaching-remote");
+  });
+
+  it("mentions the hall only at info, because keeping the mic out of it is correct", () => {
+    const found = lint(
+      doc({
+        spaces: [HALL],
+        nodes: [
+          ...onStreamOnly.nodes,
+          { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+        ],
+        links: [
+          ...onStreamOnly.links,
+          { id: "l4", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+        ],
+        routing: onStreamOnly.routing,
+      }),
+      testContext(),
+    );
+
+    const finding = found.find((d) => d.ruleId === "source-not-reaching-room");
+    expect(finding?.severity).toBe("info");
+    expect(finding?.nodeIds).toEqual(["n_mic"]);
+    // Routing the mic to MAIN instead is what howls, so this must never be
+    // raised to a severity that pushes someone into doing it.
+    expect(found.some((d) => d.severity === "critical")).toBe(false);
+  });
+});
+
 describe("infinite mirror", () => {
   it("reports a video loop through the projector and camera", () => {
     const found = lint(

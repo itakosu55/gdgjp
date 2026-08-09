@@ -98,6 +98,15 @@ runs, and an app with no device selection is reported as `software-io-unassigned
 actionable half of the same fact. That rule uses `isPortWired`, not reachability, because a join
 sitting in a meeting carries space edges on both faces and always looks reached.
 
+**Three audiences, not one.** `coverageRules` asks whether a sound reaches the stream's PROGRAM,
+the meeting and the room, and reports the asymmetry — `source-not-reaching-remote` (warn) and
+`source-not-reaching-room` (info). Arriving at the broadcast software's *input* is not being on
+the stream, since an input routed to no bus is a dead end; `no-audio-to-stream` still judges on
+inputs on purpose, because it is the rule that has to catch a silent stream earliest. Neither
+audience rule rises above warn: a hall mic that is not in the hall speakers is correct wiring,
+and a critical that correct wiring cannot clear breaks the fix-one-and-re-run loop. Sources are
+mics only until `origin` ports exist (design doc §12.5).
+
 **Creating the transport space is opt-in.** `spaceRequired: false` on the conferencing coupling
 keeps the commonest setup — one online speaker, far side not modelled — free of a
 `space-unassigned` warning, which is deliberate. The cost is that a two-join loop is only found
