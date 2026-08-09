@@ -4,6 +4,7 @@ import {
   OBS_SOURCES,
   hybridMonitorMix,
   laptopOnlyMeeting,
+  mediaSourceOnStream,
   satelliteRooms,
   speakerphoneMeeting,
   testContext,
@@ -425,6 +426,85 @@ describe("who hears it", () => {
     // Routing the mic to MAIN instead is what howls, so this must never be
     // raised to a severity that pushes someone into doing it.
     expect(found.some((d) => d.severity === "critical")).toBe(false);
+  });
+});
+
+describe("a source with no upstream", () => {
+  function about(found: Diagnostic[], nodeId: string): string[] {
+    return found.filter((d) => d.nodeIds.includes(nodeId)).map((d) => d.ruleId);
+  }
+
+  it("reports the video that is on the stream and nowhere else", () => {
+    const found = lint(mediaSourceOnStream(), testContext());
+
+    const remote = found.find((d) => d.ruleId === "source-not-reaching-remote");
+    expect(remote?.severity).toBe("warn");
+    expect(remote?.nodeIds).toEqual(["n_obs"]);
+    // The row, not the app: an OBS holds several sources and only one of them
+    // is the thing somebody has to go and change.
+    expect(remote?.message).toContain("オープニング動画");
+    expect(about(found, "n_obs")).toContain("source-not-reaching-room");
+  });
+
+  /**
+   * Playing the video into the room fixes the meeting too, and not by accident:
+   * the hall mic hears the PA and the hall mic is what the meeting listens to.
+   * That is the operation people actually perform — turn MONITOR on — so the
+   * rule clearing on it is the point rather than a leak.
+   */
+  it("clears both audiences once the video is monitored into the room", () => {
+    const base = mediaSourceOnStream();
+    const found = lint(
+      {
+        ...base,
+        routing: [...base.routing, { nodeId: "n_obs", inPort: "media_audio:1", bus: "monitor" }],
+      },
+      testContext(),
+    );
+
+    expect(about(found, "n_obs")).not.toContain("source-not-reaching-remote");
+    expect(about(found, "n_obs")).not.toContain("source-not-reaching-room");
+    // Only the video is on MONITOR, so the mic still never returns to the PA.
+    expect(ruleIds(found)).not.toContain("acoustic-feedback-loop");
+  });
+
+  it("does not call the stream silent when a video is the only sound", () => {
+    const found = lint(
+      doc({
+        nodes: [
+          { id: "n_pc", deviceId: "d_pc" },
+          {
+            id: "n_obs",
+            modelId: "m_obs",
+            hostNodeId: "n_pc",
+            ports: [{ key: "media_audio:1", template: "media_audio", label: "BGM" }],
+          },
+        ],
+        routing: [{ nodeId: "n_obs", inPort: "media_audio:1", bus: "program" }],
+      }),
+      testContext(),
+    );
+
+    expect(ruleIds(found)).not.toContain("no-audio-to-stream");
+    // Still true and still worth saying: OBS has selected none of the PC's
+    // jacks, so nothing it captures or plays is visible to any other rule.
+    expect(ruleIds(found)).toContain("software-io-unassigned");
+  });
+
+  it("still reports a silent stream when the only source is a mic that reaches nothing", () => {
+    const found = lint(
+      doc({
+        spaces: [HALL],
+        nodes: [
+          { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+          { id: "n_pc", deviceId: "d_pc" },
+          { id: "n_obs", modelId: "m_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
+        ],
+      }),
+      testContext(),
+    );
+
+    expect(found.find((d) => d.ruleId === "no-audio-to-stream")?.severity).toBe("critical");
   });
 });
 

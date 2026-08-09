@@ -98,6 +98,23 @@ describe("resolvePorts", () => {
     expect(ports.find((port) => port.key === "monitor_out")?.direction).toBe("out");
   });
 
+  // §12.5: the instance is what the reachability search starts from, so if
+  // `origin` did not survive the expansion the video would be a dead input.
+  it("keeps a source that needs nothing upstream an origin", () => {
+    const ports = resolvePorts(
+      obs,
+      node({
+        ports: [
+          { key: "media_audio:1", template: "media_audio" },
+          { key: "audio_src:1", template: "audio_src" },
+        ],
+      }),
+    );
+    expect(ports.find((port) => port.key === "media_audio:1")?.origin).toBe(true);
+    // A capture card feeding OBS is not an origin: something is upstream of it.
+    expect(ports.find((port) => port.key === "audio_src:1")?.origin).toBe(false);
+  });
+
   it("names a source whose kind the model does not declare", () => {
     expect(unknownTemplates(obs, node({ ports: [{ key: "x:1", template: "x" }] }))).toEqual(["x"]);
     expect(

@@ -482,4 +482,23 @@ test.describe("a broadcast app's sources", () => {
       "false",
     );
   });
+
+  test("a video is reported as reaching the stream and nobody else", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_sources", "routing", "n5"));
+
+    const sources = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "ソース", exact: true }) });
+    // One choice, not two: a video's picture and its sound are one source.
+    await sources.locator("#source-n5").selectOption("media_audio");
+
+    await saving(page, () => sources.getByRole("button", { name: "追加" }).click());
+
+    // Nothing is plugged into a video file, so before §12.5 the linter had no
+    // way to ask where its sound went. Now it says: PROGRAM and nowhere else.
+    await expect(
+      diagnostic(page, "source-not-reaching-remote").filter({ hasText: "メディア音声" }),
+    ).toBeVisible();
+  });
 });

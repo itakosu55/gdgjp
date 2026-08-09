@@ -5,6 +5,24 @@ import { reachableFrom } from "../paths";
 import type { DeviceCategory, Medium, SpaceKind } from "../types";
 import { portMedia } from "../types";
 
+/**
+ * Somewhere a signal begins.
+ *
+ * There are two kinds, and every rule in this file has to see the same set of
+ * them or they disagree about what the event is carrying: a jack that hears the
+ * room, and an input with no upstream at all — a video file, the BGM (§12.5).
+ *
+ * A list of sources rather than a list of nodes, because one OBS holds several.
+ * "The video reached nobody but the stream" is a fact about one row of its
+ * mixer, and reporting it against the app would name the wrong thing to fix.
+ */
+type Source = {
+  /** How the finding refers to it: a mic's name, or "OBSのオープニング動画". */
+  label: string;
+  nodeId: string;
+  starts: VertexId[];
+};
+
 /** Does the signal that must reach the stream actually get there? */
 export const coverageRules: Rule = (graph) => {
   const diagnostics: Diagnostic[] = [];
@@ -24,11 +42,11 @@ export const coverageRules: Rule = (graph) => {
   const broadcast = nodesOf(graph, "software_broadcast");
   if (broadcast.length === 0) return diagnostics;
 
-  const mics = nodesOf(graph, "mic");
-  const cameras = nodesOf(graph, "camera");
+  const audioSources = sourcesOf(graph, "mic", "audio");
+  const videoSources = sourcesOf(graph, "camera", "video");
 
-  const audioReach = reachFrom(graph, mics, "audio");
-  const videoReach = reachFrom(graph, cameras, "video");
+  const audioReach = reachFrom(graph, audioSources, "audio");
+  const videoReach = reachFrom(graph, videoSources, "video");
 
   for (const node of broadcast) {
     const audioInputs = portVertices(node, "in", "audio");
@@ -37,13 +55,13 @@ export const coverageRules: Rule = (graph) => {
         ruleId: "no-audio-to-stream",
         severity: "critical",
         message:
-          mics.length === 0
-            ? `${nodeLabel(node)} に音声が届いていません。構成にマイクがありません。`
-            : `${nodeLabel(node)} にどのマイクの音声も届いていません。配信が無音になります。`,
+          audioSources.length === 0
+            ? `${nodeLabel(node)} に音声が届いていません。構成に音源がありません。`
+            : `${nodeLabel(node)} にどの音源の音声も届いていません。配信が無音になります。`,
         nodeIds: [node.id],
         linkIds: [],
         fixes:
-          mics.length === 0
+          audioSources.length === 0
             ? [{ kind: "add-device", category: "mic", reason: "配信に乗せる音源がありません" }]
             : undefined,
       });
@@ -51,21 +69,21 @@ export const coverageRules: Rule = (graph) => {
 
     const videoInputs = portVertices(node, "in", "video");
     if (
-      cameras.length > 0 &&
+      videoSources.length > 0 &&
       videoInputs.length > 0 &&
       !videoInputs.some((vertex) => videoReach.has(vertex))
     ) {
       diagnostics.push({
         ruleId: "video-not-reaching-stream",
         severity: "info",
-        message: `${nodeLabel(node)} にカメラ映像が届いていません。`,
+        message: `${nodeLabel(node)} にどの映像ソースも届いていません。`,
         nodeIds: [node.id],
         linkIds: [],
       });
     }
   }
 
-  diagnostics.push(...audienceRules(graph, mics, broadcast));
+  diagnostics.push(...audienceRules(graph, audioSources, broadcast));
 
   if (nodesOf(graph, "recorder").length === 0) {
     diagnostics.push({
@@ -98,7 +116,7 @@ export const coverageRules: Rule = (graph) => {
  */
 function audienceRules(
   graph: BuiltGraph,
-  sources: readonly ResolvedNode[],
+  sources: readonly Source[],
   broadcast: readonly ResolvedNode[],
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
@@ -113,9 +131,7 @@ function audienceRules(
   if (meeting.size === 0 && room.size === 0) return diagnostics;
 
   for (const source of sources) {
-    const starts = portVertices(source, "out", "audio");
-    if (starts.length === 0) continue;
-    const reach = reachableFrom(graph, starts, { medium: "audio" });
+    const reach = reachableFrom(graph, source.starts, { medium: "audio" });
     // A source that reaches no audience at all is `no-audio-to-stream`'s
     // business. Saying the same thing again from a second angle helps nobody,
     // and the useful finding here is the asymmetry between the audiences.
@@ -125,8 +141,8 @@ function audienceRules(
       diagnostics.push({
         ruleId: "source-not-reaching-remote",
         severity: "warn",
-        message: `${nodeLabel(source)} の音は配信には乗っていますが、オンライン会議には送られていません。リモート参加者にだけ聞こえません。`,
-        nodeIds: [source.id],
+        message: `${source.label} の音は配信には乗っていますが、オンライン会議には送られていません。リモート参加者にだけ聞こえません。`,
+        nodeIds: [source.nodeId],
         linkIds: [],
       });
     }
@@ -135,8 +151,8 @@ function audienceRules(
       diagnostics.push({
         ruleId: "source-not-reaching-room",
         severity: "info",
-        message: `${nodeLabel(source)} の音は配信には乗っていますが、会場のスピーカーからは出ていません。`,
-        nodeIds: [source.id],
+        message: `${source.label} の音は配信には乗っていますが、会場のスピーカーからは出ていません。`,
+        nodeIds: [source.nodeId],
         linkIds: [],
       });
     }
@@ -192,11 +208,55 @@ function nodesOf(graph: BuiltGraph, category: DeviceCategory) {
   return [...graph.nodes.values()].filter((node) => node.model.category === category);
 }
 
-function reachFrom(
-  graph: BuiltGraph,
-  sources: ReturnType<typeof nodesOf>,
-  medium: Medium,
-): Set<string> {
-  const starts = sources.flatMap((node) => portVertices(node, "out", medium));
+/**
+ * Every start of a signal in this medium.
+ *
+ * `transducer` is the category whose jacks pick the world up — a mic for sound,
+ * a camera for pictures. It is one source however many jacks it has, because a
+ * stereo pair is one microphone, and because the finding "this mic is not in
+ * the room" is about the mic.
+ *
+ * An `origin` port is one source each. Two videos on one OBS are two things
+ * that can separately fail to reach an audience, and the row is what somebody
+ * would go and change.
+ */
+function sourcesOf(graph: BuiltGraph, transducer: DeviceCategory, medium: Medium): Source[] {
+  const sources: Source[] = [];
+
+  for (const node of graph.nodes.values()) {
+    const ports = [...node.ports.values()].filter((port) =>
+      portMedia(port.signal).includes(medium),
+    );
+
+    if (node.model.category === transducer) {
+      // The coupling, not merely the direction: since §11.2 a mic model may
+      // carry jacks that face no room, and only the ones that do are the sound.
+      const facing = ports.filter(
+        (port) => port.direction === "out" && port.couples === "from_space",
+      );
+      if (facing.length > 0) {
+        sources.push({
+          label: nodeLabel(node),
+          nodeId: node.id,
+          starts: facing.map((port) => portVertexId(node.id, port.key)),
+        });
+      }
+    }
+
+    for (const port of ports) {
+      if (!port.origin) continue;
+      sources.push({
+        label: `${nodeLabel(node)}の${port.label}`,
+        nodeId: node.id,
+        starts: [portVertexId(node.id, port.key)],
+      });
+    }
+  }
+
+  return sources;
+}
+
+function reachFrom(graph: BuiltGraph, sources: readonly Source[], medium: Medium): Set<VertexId> {
+  const starts = sources.flatMap((source) => source.starts);
   return starts.length === 0 ? new Set() : reachableFrom(graph, starts, { medium });
 }

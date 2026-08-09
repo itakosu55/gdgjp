@@ -104,8 +104,22 @@ the meeting and the room, and reports the asymmetry — `source-not-reaching-rem
 the stream, since an input routed to no bus is a dead end; `no-audio-to-stream` still judges on
 inputs on purpose, because it is the rule that has to catch a silent stream earliest. Neither
 audience rule rises above warn: a hall mic that is not in the hall speakers is correct wiring,
-and a critical that correct wiring cannot clear breaks the fix-one-and-re-run loop. Sources are
-mics only until `origin` ports exist (design doc §12.5).
+and a critical that correct wiring cannot clear breaks the fix-one-and-re-run loop.
+
+**A source is a jack that hears the room, or a port with no upstream.** `DeviceModelPort.origin`
+marks the second kind — a video file, the BGM — and `sourcesOf` in `coverage.ts` is the single
+set all three audience questions are asked of. Keeping one set is the point: while sources were
+mics only, playing a video made `no-audio-to-stream` call a perfectly audible stream silent, and
+"only the remote participants heard nothing" was invisible. An origin is one source *per port*,
+not per node, because one OBS holds several and the row is what somebody changes. `paths.ts` is
+untouched — `reachableFrom` already takes any vertex set, and the generic search stays free of
+domain knowledge. Sources are still limited to `mic`/`camera` category nodes plus origins, so a
+USB speakerphone's room-facing jack is not yet counted; that gap arrived with §11 and is not
+`origin`'s to close.
+
+`software-io-unassigned` fires on an OBS whose only source is a video, and that is correct: it
+has selected none of its host's jacks, so nothing it captures or plays is visible to any other
+rule. `dangling-port` stays quiet on origins because it is scoped to endpoint categories.
 
 **Space coupling belongs to the jack, not the category.** `DeviceModelPort.couples` is
 `from_space` / `to_space` / `null`; `CATEGORY_COUPLING` survives only as the default a new

@@ -265,6 +265,27 @@ export const MODELS: DeviceModel[] = [
         expandable: true,
         sourceKey: "browser",
       }),
+      // A video file has no upstream — it is where the signal starts (§12.5).
+      // Until a port could say that, playback was not an awkward thing to write
+      // down but a kind of thing the graph did not have.
+      port({
+        key: "media_audio",
+        label: "メディア音声",
+        direction: "in",
+        signal: "audio_digital",
+        expandable: true,
+        sourceKey: "media",
+        origin: true,
+      }),
+      port({
+        key: "media_video",
+        label: "メディア映像",
+        direction: "in",
+        signal: "video",
+        expandable: true,
+        sourceKey: "media",
+        origin: true,
+      }),
       port({ key: "stream_out", direction: "out", signal: "audio_digital", busKey: "program" }),
       port({ key: "program_video", direction: "out", signal: "video", busKey: "program" }),
       port({ key: "monitor_out", direction: "out", signal: "audio_digital", busKey: "monitor" }),
@@ -276,6 +297,8 @@ export const MODELS: DeviceModel[] = [
       { inPort: "video_src", bus: "program" },
       { inPort: "browser_audio", bus: "program" },
       { inPort: "browser_video", bus: "program" },
+      { inPort: "media_audio", bus: "program" },
+      { inPort: "media_video", bus: "program" },
     ],
   }),
   model({
@@ -669,6 +692,77 @@ export function hybridMonitorMix(): SetupDoc {
       // The cell that used to be impossible: the meeting is monitored into the
       // room and the hall mic is not.
       { nodeId: "n_obs", inPort: "browser_audio:1", bus: "monitor" },
+    ],
+  };
+}
+
+/**
+ * The opening video plays, and only the remote participants hear silence.
+ *
+ * §12.6 calls this one of the commonest hybrid accidents there is, and until a
+ * source could have no upstream the linter could not see the video at all: the
+ * graph knew signals that began at a cable and signals that began in a room,
+ * and playback is neither.
+ *
+ * Everything else here is a correct setup. Mix-Minus is intact — the hall mic
+ * leaves over USB and what comes back goes to the PA — and the hall mic is
+ * deliberately kept out of the PA, which is how howling is avoided and which
+ * draws exactly the `source-not-reaching-room` info the rule is kept at info
+ * for. The only thing actually wrong is which buses the video is on: PROGRAM
+ * and nothing else.
+ *
+ * The meeting's own audio is not brought into the room, which keeps this
+ * fixture about one finding. That is a relay, not a conversation.
+ */
+export function mediaSourceOnStream(): SetupDoc {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      { id: "sp_hall", kind: "acoustic", label: "メインホール" },
+      { id: "sp_mtg", kind: "transport", label: "登壇 Meet", meetingKey: "meet-media" },
+    ],
+    nodes: [
+      { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+      { id: "n_mixer", deviceId: "d_mixer", spaceId: "sp_hall" },
+      { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+      { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
+      {
+        id: "n_obs",
+        modelId: "m_obs",
+        hostNodeId: "n_pc",
+        ports: [
+          { key: "audio_src:1", template: "audio_src", label: "登壇者マイク" },
+          {
+            key: "media_audio:1",
+            template: "media_audio",
+            label: "オープニング動画",
+            sourceId: "s1",
+          },
+          {
+            key: "media_video:1",
+            template: "media_video",
+            label: "オープニング動画",
+            sourceId: "s1",
+          },
+        ],
+      },
+      { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+    ],
+    links: [
+      { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+      { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
+      { id: "l4", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
+      { id: "l5", from: ["n_obs", "monitor_out"], to: ["n_pc", "usb_out"] },
+      { id: "l6", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
+      { id: "l7", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+    ],
+    routing: [
+      { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
+      { nodeId: "n_mixer", inPort: "usb_in", bus: "main" },
+      { nodeId: "n_obs", inPort: "audio_src:1", bus: "program" },
+      { nodeId: "n_obs", inPort: "media_audio:1", bus: "program" },
+      { nodeId: "n_obs", inPort: "media_video:1", bus: "program" },
     ],
   };
 }

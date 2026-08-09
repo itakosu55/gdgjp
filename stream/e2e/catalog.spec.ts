@@ -111,6 +111,10 @@ test("a broadcast app declares kinds of source, not a fixed pair of inputs", asy
   await expect(page.getByRole("row").filter({ hasText: "browser_audio" })).toContainText(
     "対: browser",
   );
+  // A video file needs nothing plugged into it, which is what lets the linter
+  // ask where its sound goes at all (§12.5).
+  await expect(page.getByRole("row").filter({ hasText: "media_audio" })).toContainText("起点");
+  await expect(page.getByRole("row").filter({ hasText: "audio_src" })).not.toContainText("起点");
   // The outputs are still ordinary jacks.
   await expect(page.getByRole("row").filter({ hasText: "monitor_out" })).not.toContainText(
     "構成で増やせる",
