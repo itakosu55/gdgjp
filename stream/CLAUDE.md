@@ -93,6 +93,11 @@ A sender vertex merges a join's `mic_in` and `share_audio_in`, so the model says
 `transport-echo-loop` searches audio only; a video loop through a meeting is the infinite-mirror
 family and is left to `visual-feedback-loop`.
 
+`unreachable-device` skips both ends of a host relationship. A machine is used by the apps it
+runs, and an app with no device selection is reported as `software-io-unassigned` instead — the
+actionable half of the same fact. That rule uses `isPortWired`, not reachability, because a join
+sitting in a meeting carries space edges on both faces and always looks reached.
+
 **Creating the transport space is opt-in.** `spaceRequired: false` on the conferencing coupling
 keeps the commonest setup — one online speaker, far side not modelled — free of a
 `space-unassigned` warning, which is deliberate. The cost is that a two-join loop is only found

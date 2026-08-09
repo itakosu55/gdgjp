@@ -382,6 +382,69 @@ describe("per-cable checks", () => {
   });
 });
 
+describe("unfinished wiring", () => {
+  const laptopRunningMeet = doc({
+    spaces: [HALL],
+    nodes: [
+      { id: "n_laptop", deviceId: "d_laptop", spaceId: "sp_hall" },
+      { id: "n_join", modelId: "m_meet", hostNodeId: "n_laptop" },
+    ],
+  });
+
+  it("does not accuse a machine of being unused while it is running an app", () => {
+    const found = lint(laptopRunningMeet, testContext());
+
+    // The laptop is on no path because its Meet has picked no devices, not
+    // because the laptop is surplus. Reporting it as surplus reads as "delete
+    // this", which is the opposite of what has to happen.
+    expect(ruleIds(found)).not.toContain("unreachable-device");
+  });
+
+  it("names the app that has selected no input or output device", () => {
+    const found = lint(laptopRunningMeet, testContext());
+    const finding = found.find((d) => d.ruleId === "software-io-unassigned");
+
+    expect(finding?.severity).toBe("info");
+    expect(finding?.nodeIds).toEqual(["n_join", "n_laptop"]);
+    expect(finding?.message).toContain("登壇者ノートPC");
+  });
+
+  it("reports a join whose meeting alone makes it look wired", () => {
+    const found = lint(
+      doc({
+        spaces: [HALL, { id: "sp_mtg", kind: "transport", label: "打ち合わせ" }],
+        nodes: [
+          { id: "n_laptop", deviceId: "d_laptop", spaceId: "sp_hall" },
+          { id: "n_join", modelId: "m_meet", hostNodeId: "n_laptop", spaceId: "sp_mtg" },
+          { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
+          { id: "n_join2", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+        ],
+      }),
+      testContext(),
+    );
+
+    // Both joins carry the transport space's edges on both faces, so a
+    // reachability check can never find this state — only `isPortWired` can.
+    const reported = found
+      .filter((d) => d.ruleId === "software-io-unassigned")
+      .map((d) => d.nodeIds[0]);
+    expect(reported).toEqual(["n_join", "n_join2"]);
+  });
+
+  it("clears once the app is assigned to the machine's jacks", () => {
+    const found = lint(laptopOnlyMeeting(), testContext());
+
+    expect(ruleIds(found)).not.toContain("software-io-unassigned");
+    expect(ruleIds(found)).not.toContain("unreachable-device");
+  });
+
+  it("still reports gear that is attached to nothing", () => {
+    const found = lint(doc({ nodes: [{ id: "n_mixer", deviceId: "d_mixer" }] }), testContext());
+
+    expect(ruleIds(found)).toContain("unreachable-device");
+  });
+});
+
 describe("event membership", () => {
   it("reports gear that was not brought to the event", () => {
     const found = lint(

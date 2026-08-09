@@ -170,7 +170,23 @@ export const structureRules: Rule = (graph, ctx) => {
     });
   }
 
+  // A machine is used by the apps it runs, so neither end of that relationship
+  // is a candidate for `unreachable-device`. §10.4 made the machine the unit
+  // the layout ranks; the linter has to say the same thing, because "this PC is
+  // on no signal path" is never the finding worth reporting — a laptop is
+  // carried in to run something, and what is actually missing is which of its
+  // jacks that something uses. `software-io-unassigned` below says that, and
+  // saying it twice helps nobody.
+  const machines = new Set<string>();
   for (const resolved of graph.nodes.values()) {
+    const host = resolved.node.hostNodeId;
+    if (host && graph.nodes.has(host)) machines.add(host);
+  }
+
+  for (const resolved of graph.nodes.values()) {
+    if (machines.has(resolved.id)) continue;
+    const host = resolved.node.hostNodeId;
+    if (host && graph.nodes.has(host)) continue;
     const touched = graph.edges.some((edge) => {
       const from = graph.vertices.get(edge.from);
       const to = graph.vertices.get(edge.to);
@@ -185,6 +201,31 @@ export const structureRules: Rule = (graph, ctx) => {
       severity: "info",
       message: `${nodeLabel(resolved)} はどの信号経路にも参加していません。`,
       nodeIds: [resolved.id],
+      linkIds: [],
+    });
+  }
+
+  // An app that has selected no input or output device at all.
+  //
+  // The reachability check above cannot find this one: a join sitting in a
+  // meeting carries the transport space's edges on both faces, so it always
+  // looks touched. `isPortWired` counts cables and device selections only,
+  // which is the distinction §9.10 drew for exactly this reason.
+  //
+  // Until the selection is written down there is no path from the room into the
+  // meeting, and §9.1 — the presenter's own laptop sending the room back — is
+  // invisible to every rule in this file.
+  for (const resolved of graph.nodes.values()) {
+    const hostId = resolved.node.hostNodeId;
+    if (!hostId) continue;
+    const host = graph.nodes.get(hostId);
+    if (!host) continue;
+    if (resolved.model.ports.some((port) => isPortWired(graph, resolved.id, port))) continue;
+    diagnostics.push({
+      ruleId: "software-io-unassigned",
+      severity: "info",
+      message: `${nodeLabel(resolved)} が ${nodeLabel(host)} のどの端子も使っていません。使う入力・出力デバイスを割り当ててください。割り当てがないと、会場の音を拾っていても会場へ音を出していても検出できません。`,
+      nodeIds: [resolved.id, host.id],
       linkIds: [],
     });
   }
