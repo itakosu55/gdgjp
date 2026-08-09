@@ -54,15 +54,35 @@ function joinPorts(): DeviceModelPort[] {
   // transport space and every output is the meeting talking back.
   const send = { couples: "to_space" } as const;
   const receive = { couples: "from_space" } as const;
+  // `source_key` says which jacks are one thing. It groups per direction, so
+  // the share we send and the share we receive are two sources — and `cam` has
+  // no audio half by design, because a camera and a microphone are chosen
+  // separately (§12.4).
+  const share = { sourceKey: "share" } as const;
+  const cam = { sourceKey: "cam" } as const;
   return [
     port({ key: "mic_in", direction: "in", signal: "audio_digital", ...send }),
-    port({ key: "cam_video_in", direction: "in", signal: "video", ...send }),
-    port({ key: "share_audio_in", direction: "in", signal: "audio_digital", ...send }),
-    port({ key: "share_video_in", direction: "in", signal: "video", ...send }),
+    port({ key: "cam_video_in", direction: "in", signal: "video", ...send, ...cam }),
+    port({ key: "share_audio_in", direction: "in", signal: "audio_digital", ...send, ...share }),
+    port({ key: "share_video_in", direction: "in", signal: "video", ...send, ...share }),
     port({ key: "spk_out", direction: "out", signal: "audio_digital", ...receive }),
-    port({ key: "cam_video_out", direction: "out", signal: "video", ...receive }),
-    port({ key: "share_audio_out", direction: "out", signal: "audio_digital", ...receive }),
-    port({ key: "share_video_out", direction: "out", signal: "video", ...receive }),
+    port({ key: "cam_video_out", direction: "out", signal: "video", ...receive, ...cam }),
+    port({
+      key: "share_audio_out",
+      label: "リモート画面共有の音声",
+      direction: "out",
+      signal: "audio_digital",
+      ...receive,
+      ...share,
+    }),
+    port({
+      key: "share_video_out",
+      label: "リモート画面共有の映像",
+      direction: "out",
+      signal: "video",
+      ...receive,
+      ...share,
+    }),
   ];
 }
 
@@ -763,6 +783,65 @@ export function mediaSourceOnStream(): SetupDoc {
       { nodeId: "n_obs", inPort: "audio_src:1", bus: "program" },
       { nodeId: "n_obs", inPort: "media_audio:1", bus: "program" },
       { nodeId: "n_obs", inPort: "media_video:1", bus: "program" },
+    ],
+  };
+}
+
+/**
+ * A remote participant shares their screen, and the stream gets the picture
+ * without the sound — §12.4's headline, and unwritable as a finding until the
+ * model could say that two ports are one share.
+ *
+ * The mistake is upstream of OBS, which is why the finding names the meeting:
+ * both of OBS's browser rows are on PROGRAM and perfectly correct. Only the
+ * share's video half was ever captured.
+ */
+export function halfSharedScreen(): SetupDoc {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      { id: "sp_hall", kind: "acoustic", label: "メインホール" },
+      { id: "sp_mtg", kind: "transport", label: "登壇 Meet", meetingKey: "meet-share" },
+    ],
+    nodes: [
+      { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+      { id: "n_mixer", deviceId: "d_mixer", spaceId: "sp_hall" },
+      { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
+      {
+        id: "n_obs",
+        modelId: "m_obs",
+        hostNodeId: "n_pc",
+        ports: [
+          { key: "audio_src:1", template: "audio_src", label: "登壇者マイク" },
+          {
+            key: "browser_audio:1",
+            template: "browser_audio",
+            label: "リモート画面共有",
+            sourceId: "s1",
+          },
+          {
+            key: "browser_video:1",
+            template: "browser_video",
+            label: "リモート画面共有",
+            sourceId: "s1",
+          },
+        ],
+      },
+      { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+    ],
+    links: [
+      { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+      { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
+      { id: "l4", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
+      // The share's picture was captured and its sound was not.
+      { id: "l5", from: ["n_join", "share_video_out"], to: ["n_obs", "browser_video:1"] },
+    ],
+    routing: [
+      { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
+      { nodeId: "n_obs", inPort: "audio_src:1", bus: "program" },
+      { nodeId: "n_obs", inPort: "browser_audio:1", bus: "program" },
+      { nodeId: "n_obs", inPort: "browser_video:1", bus: "program" },
     ],
   };
 }

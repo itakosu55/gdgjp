@@ -501,4 +501,23 @@ test.describe("a broadcast app's sources", () => {
       diagnostic(page, "source-not-reaching-remote").filter({ hasText: "メディア音声" }),
     ).toBeVisible();
   });
+
+  test("a browser source with only one half on PROGRAM is reported, and the cell fixes it", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_sources", "routing", "n5"));
+
+    // The meeting is monitored into the room but its picture was never put on
+    // the stream. Both halves are called "E2E Meet", so the finding has to say
+    // which medium it means.
+    await expect(
+      diagnostic(page, "partial-source").filter({ hasText: "E2E Meetの映像" }),
+    ).toBeVisible();
+
+    const video = page.getByRole("row").filter({ hasText: "E2E Meet" }).nth(1);
+    await saving(page, () => video.getByRole("button", { name: /PROGRAM$/ }).click());
+
+    await expect(diagnostic(page, "partial-source")).toHaveCount(0);
+  });
 });

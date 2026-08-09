@@ -74,6 +74,12 @@ test("a conferencing app carries the ports a screen share needs", async ({ page 
     "空間へ出す",
   );
   await expect(page.getByRole("row").filter({ hasText: "spk_out" })).toContainText("空間から拾う");
+
+  // The ports stay two, and now the model says they are one share — which is
+  // what lets "only the picture is on the stream" be reported (§12.4).
+  await expect(page.getByRole("row").filter({ hasText: "share_audio_out" })).toContainText(
+    "対: share",
+  );
 });
 
 test("a jack can be told it faces the room even though it is an input", async ({ page }) => {

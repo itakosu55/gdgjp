@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { MODELS } from "./fixtures";
-import { initialPorts, newSource, resolvePorts, sourceGroup, unknownTemplates } from "./ports";
+import {
+  initialPorts,
+  newSource,
+  resolvePorts,
+  sourceGroup,
+  sourceGroups,
+  unknownTemplates,
+} from "./ports";
 import type { SetupNode } from "./schema";
 import type { DeviceModel } from "./types";
 
@@ -164,6 +171,39 @@ describe("adding a source", () => {
 
   it("refuses a jack that is not a template", () => {
     expect(newSource(obs, node(), "monitor_out")).toEqual([]);
+  });
+});
+
+describe("sourceGroups", () => {
+  const meet = modelOf("m_meet");
+
+  it("pairs a catalogued screen share, and keeps the send apart from the return", () => {
+    const groups = sourceGroups(meet.ports, { id: "n1", modelId: "m_meet" });
+
+    expect(groups.map((group) => group.ports.map((port) => port.key))).toEqual([
+      ["share_audio_in", "share_video_in"],
+      ["share_audio_out", "share_video_out"],
+    ]);
+  });
+
+  it("drops a group with nothing to pair — a camera has no audio half", () => {
+    const groups = sourceGroups(meet.ports, { id: "n1", modelId: "m_meet" });
+    expect(groups.some((group) => group.id === "cam")).toBe(false);
+  });
+
+  it("keeps two browser sources apart, though they share one template", () => {
+    const instances: SetupNode["ports"] = [
+      { key: "browser_audio:1", template: "browser_audio", sourceId: "s1" },
+      { key: "browser_video:1", template: "browser_video", sourceId: "s1" },
+      { key: "browser_audio:2", template: "browser_audio", sourceId: "s2" },
+      { key: "browser_video:2", template: "browser_video", sourceId: "s2" },
+    ];
+    const setup = node({ ports: instances });
+
+    expect(sourceGroups(resolvePorts(obs, setup), setup).map((group) => group.id)).toEqual([
+      "s1",
+      "s2",
+    ]);
   });
 });
 

@@ -121,6 +121,16 @@ USB speakerphone's room-facing jack is not yet counted; that gap arrived with §
 has selected none of its host's jacks, so nothing it captures or plays is visible to any other
 rule. `dangling-port` stays quiet on origins because it is scoped to endpoint categories.
 
+**Two ports, one source.** `sourceKey` (catalog) and `sourceId` (document) name the pairing, and
+`sourceGroups` reads both — a browser source is paired on the day, a meeting's screen share has
+been two jacks since §9.7.2. Audio and video are deliberately *not* merged into one port, since
+"the picture is on the stream and the sound is not" is the commonest accident there is and a
+combined port cannot be half wrong; `partial-source` (warn) is what the name bought. Grouping is
+**per direction** — what we send into a meeting and what it sends back are two shares — and a
+group of one is dropped, which is why `cam` names a feature and reports nothing: a camera and a
+microphone are chosen separately. The rule judges on reaching PROGRAM, not on being wired, so a
+row switched off in the matrix counts as off the stream.
+
 **Space coupling belongs to the jack, not the category.** `DeviceModelPort.couples` is
 `from_space` / `to_space` / `null`; `CATEGORY_COUPLING` survives only as the default a new
 catalog port gets and as the warning policy below, and **the graph never reads it**. What

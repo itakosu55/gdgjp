@@ -2,7 +2,8 @@ import type { Diagnostic, Rule } from "../diagnostics";
 import type { BuiltGraph, ResolvedNode, VertexId } from "../graph";
 import { nodeLabel, portVertexId, portVertices } from "../graph";
 import { reachableFrom } from "../paths";
-import type { DeviceCategory, Medium, SpaceKind } from "../types";
+import { sourceGroups } from "../ports";
+import type { DeviceCategory, DeviceModelPort, Medium, SpaceKind } from "../types";
 import { portMedia } from "../types";
 
 /**
@@ -84,6 +85,7 @@ export const coverageRules: Rule = (graph) => {
   }
 
   diagnostics.push(...audienceRules(graph, audioSources, broadcast));
+  diagnostics.push(...partialSourceRules(graph, broadcast));
 
   if (nodesOf(graph, "recorder").length === 0) {
     diagnostics.push({
@@ -159,6 +161,72 @@ function audienceRules(
   }
 
   return diagnostics;
+}
+
+/**
+ * One source, half of it on the stream.
+ *
+ * "The picture is there and the sound is not" is the commonest browser-source
+ * and screen-share accident there is, and it is the reason §12.4 refused to
+ * merge audio and video into one port: a combined port cannot be half wrong.
+ * Keeping them apart left the opposite gap, though — nothing said the two ports
+ * were one thing — and `sourceKey` / `sourceId` are that missing name.
+ *
+ * Reaching PROGRAM, not merely being wired: a source row switched off in the
+ * matrix is off the stream just as surely as one nothing feeds.
+ */
+function partialSourceRules(graph: BuiltGraph, broadcast: readonly ResolvedNode[]): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const program: Record<Medium, Set<VertexId>> = {
+    audio: new Set(broadcast.flatMap((node) => programVertices(node, "audio"))),
+    video: new Set(broadcast.flatMap((node) => programVertices(node, "video"))),
+  };
+  if (program.audio.size === 0 || program.video.size === 0) return diagnostics;
+
+  for (const node of graph.nodes.values()) {
+    for (const group of sourceGroups([...node.ports.values()], node.node)) {
+      const half = (medium: Medium) => {
+        const ports = group.ports.filter((port) => portMedia(port.signal).includes(medium));
+        if (ports.length === 0) return null;
+        const starts = ports.map((port) => portVertexId(node.id, port.key));
+        return {
+          port: ports[0],
+          onStream: reaches(program[medium], reachableFrom(graph, starts, { medium })),
+        };
+      };
+
+      const audio = half("audio");
+      const video = half("video");
+      // A group with only one medium in it names a feature rather than a pair,
+      // and two halves that agree are simply a source somebody chose to leave
+      // off the stream.
+      if (!audio || !video || audio.onStream === video.onStream) continue;
+
+      const present = audio.onStream ? audio.port : video.port;
+      const missing = audio.onStream ? video.port : audio.port;
+      diagnostics.push({
+        ruleId: "partial-source",
+        severity: "warn",
+        message: `${nodeLabel(node)} の ${halfLabel(present)} は配信に乗っていますが、${halfLabel(missing)} が乗っていません。`,
+        nodeIds: [node.id],
+        linkIds: [],
+      });
+    }
+  }
+
+  return diagnostics;
+}
+
+/**
+ * Names one half of a source unambiguously.
+ *
+ * An instance's two halves carry the same name — a browser source called "Meet"
+ * is "Meet" twice — so the medium has to be said out loud. A catalogued jack
+ * usually says it already.
+ */
+function halfLabel(port: DeviceModelPort): string {
+  const medium = portMedia(port.signal).includes("video") ? "映像" : "音声";
+  return port.label.includes(medium) ? port.label : `${port.label}の${medium}`;
 }
 
 function reaches(targets: ReadonlySet<VertexId>, reach: ReadonlySet<VertexId>): boolean {

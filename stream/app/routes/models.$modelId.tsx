@@ -166,12 +166,17 @@ function coupling(
  * A physical jack says nothing here. A template says how its instances behave:
  * whether they come in pairs, and whether a cable is expected to reach them.
  */
+/**
+ * The three things a port can say about being a source. Pairing is not tied to
+ * being expandable: a meeting's screen share is two fixed jacks and one share
+ * (§12.4).
+ */
 function sourceNote(port: DeviceModelPort): string {
-  if (!port.expandable) return "—";
-  const parts = ["構成で増やせる"];
+  const parts: string[] = [];
+  if (port.expandable) parts.push("構成で増やせる");
   if (port.sourceKey) parts.push(`対: ${port.sourceKey}`);
   if (port.origin) parts.push("起点");
-  return parts.join(" / ");
+  return parts.length > 0 ? parts.join(" / ") : "—";
 }
 
 function slug(value: FormDataEntryValue | null): string {

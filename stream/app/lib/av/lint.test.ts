@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Diagnostic } from "./diagnostics";
 import {
   OBS_SOURCES,
+  halfSharedScreen,
   hybridMonitorMix,
   laptopOnlyMeeting,
   mediaSourceOnStream,
@@ -505,6 +506,70 @@ describe("a source with no upstream", () => {
     );
 
     expect(found.find((d) => d.ruleId === "no-audio-to-stream")?.severity).toBe("critical");
+  });
+});
+
+describe("two ports that are one source", () => {
+  it("reports a screen share whose picture is on the stream and whose sound is not", () => {
+    const found = lint(halfSharedScreen(), testContext());
+
+    const finding = found.find((d) => d.ruleId === "partial-source");
+    expect(finding?.severity).toBe("warn");
+    // The meeting, not OBS: both of OBS's rows are on PROGRAM, and what is
+    // missing is the capture upstream of them.
+    expect(finding?.nodeIds).toEqual(["n_join"]);
+    expect(finding?.message).toContain("リモート画面共有の音声");
+  });
+
+  it("clears once the share's audio is captured too", () => {
+    const base = halfSharedScreen();
+    const found = lint(
+      {
+        ...base,
+        links: [
+          ...base.links,
+          { id: "l6", from: ["n_join", "share_audio_out"], to: ["n_obs", "browser_audio:1"] },
+        ],
+      },
+      testContext(),
+    );
+
+    expect(ruleIds(found)).not.toContain("partial-source");
+  });
+
+  /**
+   * The instance road, not the catalog one: a browser source's two halves are
+   * one thing because the document says so, and switching one of them off in
+   * the matrix is the same mistake made from the other end.
+   */
+  it("reports a browser source with only one half routed to PROGRAM", () => {
+    const base = hybridMonitorMix();
+    const found = lint(
+      {
+        ...base,
+        routing: base.routing.filter(
+          (route) => !(route.inPort === "browser_video:1" && route.bus === "program"),
+        ),
+      },
+      testContext(),
+    );
+
+    const finding = found.find((d) => d.ruleId === "partial-source");
+    expect(finding?.nodeIds).toEqual(["n_obs"]);
+    // Both halves are called "Meet", so the medium has to be said out loud.
+    expect(finding?.message).toContain("Meetの映像");
+  });
+
+  it("says nothing when both halves are on the stream", () => {
+    expect(ruleIds(lint(hybridMonitorMix(), testContext()))).not.toContain("partial-source");
+  });
+
+  // A camera and a microphone are separate choices, so `cam` is a feature name
+  // rather than a pair. Reporting a join for having no audio half of its
+  // camera would be reporting every join there is.
+  it("says nothing about a group that has only one medium in it", () => {
+    const found = lint(mediaSourceOnStream(), testContext());
+    expect(ruleIds(found)).not.toContain("partial-source");
   });
 });
 
