@@ -70,6 +70,7 @@ export async function action(args: Route.ActionArgs) {
         internalRouting: String(
           form.get("internalRouting") ?? "none",
         ) as DeviceModel["internalRouting"],
+        echoCancels: form.has("echoCancels"),
         notes: emptyToNull(form.get("notes")),
       });
       return null;
@@ -537,6 +538,22 @@ export default function ModelDetailPage({ loaderData, actionData }: Route.Compon
                     </option>
                   ))}
                 </select>
+              </Field>
+              <Field
+                label="エコーキャンセラを内蔵する"
+                htmlFor="echoCancels"
+                hint="機材自身の機能(AEC)についてです。部屋の響きではありません。"
+              >
+                <div className="flex items-center pt-1.5 pb-1">
+                  <input
+                    type="checkbox"
+                    id="echoCancels"
+                    name="echoCancels"
+                    value="on"
+                    defaultChecked={model.echoCancels}
+                    className="size-4"
+                  />
+                </div>
               </Field>
               <Button type="submit" variant="outline">
                 保存

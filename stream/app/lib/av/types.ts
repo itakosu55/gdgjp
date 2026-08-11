@@ -130,6 +130,13 @@ export type DeviceModel = {
   name: string;
   category: DeviceCategory;
   internalRouting: InternalRouting;
+  /**
+   * This unit subtracts what it played out of what it picked up: it carries an
+   * acoustic echo canceller. A spec-sheet fact about the model, like `couples`
+   * or `phantom`, and not a claim about any particular room — whether it can
+   * actually cancel depends on the wiring, which is §9.7.4's job to check.
+   */
+  echoCancels: boolean;
   buses: DeviceModelBus[];
   ports: DeviceModelPort[];
   /** Template rows copied into a setup's routing matrix when a node is added. */

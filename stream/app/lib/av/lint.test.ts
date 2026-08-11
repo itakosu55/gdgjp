@@ -336,6 +336,98 @@ describe("remote participant echo", () => {
     expect(echo?.severity).toBe("warn");
     expect(echo?.nodeIds).toContain("n_phone");
   });
+
+  /**
+   * A room DSP: the meeting goes out through it to the PA, the room comes back
+   * through it from the mic, and it owns neither end. `d_dsp` and `d_mixer` are
+   * the same matrix wired the same way, so these two cases differ in exactly
+   * one thing — whether the model claims an echo canceller.
+   */
+  const throughDsp = (deviceId: string) =>
+    doc({
+      spaces: [HALL],
+      nodes: [
+        { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+        { id: "n_dsp", deviceId, spaceId: "sp_hall" },
+        { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+        { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
+        {
+          id: "n_join",
+          deviceId: "d_meet",
+          hostNodeId: "n_pc",
+          assignments: [
+            { port: "mic_in", hostPort: "usb_in" },
+            { port: "spk_out", hostPort: "usb_out" },
+          ],
+        },
+      ],
+      links: [
+        { id: "l1", from: ["n_mic", "out"], to: ["n_dsp", "ch1"] },
+        { id: "l2", from: ["n_dsp", "main_out"], to: ["n_speaker", "in"] },
+        { id: "l3", from: ["n_pc", "usb_out"], to: ["n_dsp", "usb_in"] },
+        { id: "l4", from: ["n_dsp", "usb_send"], to: ["n_pc", "usb_in"] },
+      ],
+      routing: [
+        { nodeId: "n_dsp", inPort: "ch1", bus: "usb" },
+        { nodeId: "n_dsp", inPort: "usb_in", bus: "main" },
+      ],
+    });
+
+  it("downgrades the loop a room DSP standing on both legs says it cancels", () => {
+    const found = lint(throughDsp("d_dsp"), testContext());
+    const echo = found.find((d) => d.ruleId === "remote-echo-acoustic");
+
+    expect(echo?.severity).toBe("warn");
+    expect(echo?.message).toContain("会議室DSP");
+    expect(ruleIds(found)).not.toContain("aec-reference-missing");
+  });
+
+  it("keeps it critical for the same wiring through a mixer that claims nothing", () => {
+    const found = lint(throughDsp("d_mixer"), testContext());
+
+    expect(found.find((d) => d.ruleId === "remote-echo-acoustic")?.severity).toBe("critical");
+  });
+
+  /**
+   * The finding the declaration creates rather than removes (§13.5). The PA is
+   * fed straight from the PC, so the DSP hears the room but never sees what was
+   * played into it — it has no reference, and cancels nothing.
+   */
+  it("reports a canceller that never receives what the room is playing", () => {
+    const found = lint(
+      doc({
+        spaces: [HALL],
+        nodes: [
+          { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+          { id: "n_dsp", deviceId: "d_dsp", spaceId: "sp_hall" },
+          { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+          { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
+          {
+            id: "n_join",
+            deviceId: "d_meet",
+            hostNodeId: "n_pc",
+            assignments: [
+              { port: "mic_in", hostPort: "usb_in" },
+              { port: "spk_out", hostPort: "headphone_out" },
+            ],
+          },
+        ],
+        links: [
+          { id: "l1", from: ["n_mic", "out"], to: ["n_dsp", "ch1"] },
+          { id: "l2", from: ["n_pc", "headphone_out"], to: ["n_speaker", "in"] },
+          { id: "l3", from: ["n_dsp", "usb_send"], to: ["n_pc", "usb_in"] },
+        ],
+        routing: [{ nodeId: "n_dsp", inPort: "ch1", bus: "usb" }],
+      }),
+      testContext(),
+    );
+
+    const stranded = found.find((d) => d.ruleId === "aec-reference-missing");
+    expect(stranded?.severity).toBe("warn");
+    expect(stranded?.nodeIds).toEqual(["n_dsp"]);
+    // The echo is still uncancelled, so the loop keeps its own severity.
+    expect(found.find((d) => d.ruleId === "remote-echo-acoustic")?.severity).toBe("critical");
+  });
 });
 
 describe("transport echo", () => {

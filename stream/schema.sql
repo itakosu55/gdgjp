@@ -46,7 +46,7 @@ CREATE TABLE device_models (
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
   deleted_at INTEGER
-);
+, echo_cancels INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX device_models_category_idx ON device_models (category);
 CREATE TABLE device_model_buses (
   id       TEXT NOT NULL PRIMARY KEY,

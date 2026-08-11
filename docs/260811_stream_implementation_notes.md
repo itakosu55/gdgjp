@@ -557,11 +557,22 @@ belong to the join or its host, which is only ever the laptop: `speakerphoneMeet
 speakerphone in a meeting room, the most ordinary rig there is — reported critical, and no test
 had noticed.
 
-Still open, and named in §13.7: a canceller that owns *neither* face. A room DSP hears through
-mics it does not contain and plays through a PA it does not contain, so no shape of the path
-tells it apart from a plain analog mixer standing in the same two places — which is why
-`hybridMonitorMix()` still reports one `remote-echo-acoustic` critical that no wiring change
-clears, and should. `reinforced` deliberately does not touch it either: the flag asserts loop
-gain below unity in one room, not that echo is inaudible, and echo is a defect far below
-oscillation. Saying it needs a capability on the model, plus a counter-finding for the DSP wired
-to only one leg — a declaration that only ever removes findings is a lint-disable (§13.5).
+§13.7's remaining case was a canceller owning *neither* face. A room DSP hears through mics it does
+not contain and plays through a PA it does not contain, so no shape of the path tells it apart from
+a plain analog mixer standing in the same two places. `DeviceModel.echoCancels` (migration 0010) is
+that missing fact, and it is deliberately a spec-sheet claim about the box — the same kind of fact
+as `couples` or `phantom` — rather than a claim about a room. The wiring still decides, which is
+what keeps §13.8's objection off it: the flag counts only for a unit standing on both legs of the
+room hop, so the two lint cases that differ in nothing but `d_dsp` against `d_mixer`, wired
+identically, come out warn and critical. The catalog never moves a severity by itself.
+
+It cuts both ways, as §13.5 demands of any declaration. A declaring unit on only one leg raises
+`aec-reference-missing`: a DSP hearing a room whose PA is fed from somewhere it never sees has
+nothing to subtract, and one feeding a room it never hears has nothing to subtract it from. That is
+the commonest way these rooms are installed wrong and it is invisible until someone joins the
+meeting, so the declaration earns its keep by finding it.
+
+`hybridMonitorMix()` keeps its critical, and always should: nothing on that path claims a canceller,
+so §12's acceptance condition is untouched. `reinforced` still does not reach it either — that flag
+asserts loop gain below unity in one room, not that echo is inaudible, and echo is a defect far
+below oscillation.

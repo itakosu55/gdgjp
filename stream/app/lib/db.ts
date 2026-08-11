@@ -21,6 +21,7 @@ type ModelRow = {
   name: string;
   category: string;
   internal_routing: string;
+  echo_cancels: number;
   notes: string | null;
 };
 
@@ -54,7 +55,7 @@ type PortRow = {
 
 type RouteRow = { model_id: string; in_port: string; bus: string };
 
-const MODEL_COLS = "id, maker, name, category, internal_routing, notes";
+const MODEL_COLS = "id, maker, name, category, internal_routing, echo_cancels, notes";
 const BUS_COLS = "id, model_id, key, label, kind, sort_order";
 const PORT_SELECT = `SELECT p.id, p.model_id, p.key, p.label, p.direction, p.signal, p.connector,
          p.level, p.channels, p.phantom, p.couples, p.expandable, p.source_key, p.origin,
@@ -113,6 +114,7 @@ function assemble(
     name: row.name,
     category: row.category as DeviceCategory,
     internalRouting: row.internal_routing as DeviceModel["internalRouting"],
+    echoCancels: row.echo_cancels === 1,
     buses: (busesBy.get(row.id) ?? []).map(toBus),
     ports: (portsBy.get(row.id) ?? []).map(toPort),
     defaultRoutes: (routesBy.get(row.id) ?? []).map((r) => ({ inPort: r.in_port, bus: r.bus })),
@@ -164,6 +166,7 @@ export type ModelInput = {
   name: string;
   category: DeviceCategory;
   internalRouting: DeviceModel["internalRouting"];
+  echoCancels: boolean;
   notes: string | null;
 };
 
@@ -175,10 +178,19 @@ export async function createModel(
   const id = newId("model");
   await db
     .prepare(
-      `INSERT INTO device_models (id, maker, name, category, internal_routing, notes, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO device_models (id, maker, name, category, internal_routing, echo_cancels, notes, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, input.maker, input.name, input.category, input.internalRouting, input.notes, userId)
+    .bind(
+      id,
+      input.maker,
+      input.name,
+      input.category,
+      input.internalRouting,
+      input.echoCancels ? 1 : 0,
+      input.notes,
+      userId,
+    )
     .run();
   return id;
 }
@@ -187,11 +199,19 @@ export async function updateModel(db: D1Database, id: string, input: ModelInput)
   await db
     .prepare(
       `UPDATE device_models
-       SET maker = ?, name = ?, category = ?, internal_routing = ?, notes = ?,
+       SET maker = ?, name = ?, category = ?, internal_routing = ?, echo_cancels = ?, notes = ?,
            updated_at = unixepoch()
        WHERE id = ?`,
     )
-    .bind(input.maker, input.name, input.category, input.internalRouting, input.notes, id)
+    .bind(
+      input.maker,
+      input.name,
+      input.category,
+      input.internalRouting,
+      input.echoCancels ? 1 : 0,
+      input.notes,
+      id,
+    )
     .run();
 }
 

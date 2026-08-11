@@ -91,6 +91,7 @@ function model(spec: {
   name: string;
   category: DeviceCategory;
   internalRouting: InternalRouting;
+  echoCancels: boolean;
   ports: DeviceModelPort[];
   buses?: DeviceModelBus[];
   defaultRoutes?: DeviceModel["defaultRoutes"];
@@ -101,6 +102,7 @@ function model(spec: {
     name: spec.name,
     category: spec.category,
     internalRouting: spec.internalRouting,
+    echoCancels: spec.echoCancels,
     buses: spec.buses ?? [],
     ports: spec.ports,
     defaultRoutes: spec.defaultRoutes ?? [],
@@ -113,6 +115,7 @@ export const MODELS: DeviceModel[] = [
     name: "Dynamic Mic",
     category: "mic",
     internalRouting: "none",
+    echoCancels: false,
     ports: [
       port({
         key: "out",
@@ -129,6 +132,7 @@ export const MODELS: DeviceModel[] = [
     name: "Condenser Mic",
     category: "mic",
     internalRouting: "none",
+    echoCancels: false,
     ports: [
       port({
         key: "out",
@@ -146,6 +150,7 @@ export const MODELS: DeviceModel[] = [
     name: "Compact USB Mixer",
     category: "mixer",
     internalRouting: "matrix",
+    echoCancels: false,
     buses: [bus("main", "main"), bus("aux1", "aux"), bus("usb", "usb")],
     ports: [
       port({
@@ -190,11 +195,55 @@ export const MODELS: DeviceModel[] = [
       }),
     ],
   }),
+  /**
+   * A room DSP — the same matrix a mixer is, plus the one fact that changes how
+   * a loop through it reads.
+   *
+   * It owns neither the mics nor the speakers, so it stands exactly where
+   * `m_mixer` stands and no shape of the path tells them apart. `echoCancels`
+   * is the only difference, and it is a claim about the box, not the room
+   * (§13.7).
+   */
+  model({
+    id: "m_dsp",
+    name: "Room DSP",
+    category: "mixer",
+    internalRouting: "matrix",
+    echoCancels: true,
+    buses: [bus("main", "main"), bus("usb", "usb")],
+    ports: [
+      port({
+        key: "ch1",
+        direction: "in",
+        signal: "audio_analog",
+        connector: "xlr",
+        level: "mic",
+        phantom: "provides",
+      }),
+      port({ key: "usb_in", direction: "in", signal: "audio_digital", connector: "usb_b" }),
+      port({
+        key: "main_out",
+        direction: "out",
+        signal: "audio_analog",
+        connector: "trs",
+        level: "line",
+        busKey: "main",
+      }),
+      port({
+        key: "usb_send",
+        direction: "out",
+        signal: "audio_digital",
+        connector: "usb_b",
+        busKey: "usb",
+      }),
+    ],
+  }),
   model({
     id: "m_speaker",
     name: "Powered Speaker",
     category: "speaker",
     internalRouting: "none",
+    echoCancels: false,
     ports: [
       port({
         key: "in",
@@ -216,6 +265,7 @@ export const MODELS: DeviceModel[] = [
     name: "Streaming Laptop",
     category: "computer",
     internalRouting: "none",
+    echoCancels: false,
     ports: [
       port({
         key: "builtin_mic",
@@ -253,6 +303,7 @@ export const MODELS: DeviceModel[] = [
     name: "OBS Studio",
     category: "software_broadcast",
     internalRouting: "matrix",
+    echoCancels: false,
     buses: [bus("program", "main"), bus("monitor", "monitor")],
     ports: [
       port({
@@ -330,6 +381,7 @@ export const MODELS: DeviceModel[] = [
     // join reaches is its *meeting*, which is a transport space, not an
     // internal route.
     internalRouting: "none",
+    echoCancels: false,
     ports: joinPorts(),
   }),
   model({
@@ -337,6 +389,7 @@ export const MODELS: DeviceModel[] = [
     name: "VDO.Ninja",
     category: "software_conferencing",
     internalRouting: "none",
+    echoCancels: false,
     ports: joinPorts(),
   }),
   /**
@@ -353,6 +406,7 @@ export const MODELS: DeviceModel[] = [
     name: "USB Speakerphone",
     category: "audio_interface",
     internalRouting: "none",
+    echoCancels: false,
     ports: [
       port({
         key: "usb_out",
@@ -375,6 +429,7 @@ export const MODELS: DeviceModel[] = [
     name: "Camcorder",
     category: "camera",
     internalRouting: "none",
+    echoCancels: false,
     ports: [
       port({
         key: "hdmi_out",
@@ -390,6 +445,7 @@ export const MODELS: DeviceModel[] = [
     name: "HDMI Capture",
     category: "capture",
     internalRouting: "passthrough",
+    echoCancels: false,
     ports: [
       port({ key: "hdmi_in", direction: "in", signal: "video", connector: "hdmi" }),
       port({ key: "usb_out", direction: "out", signal: "video", connector: "usb_c" }),
@@ -400,6 +456,7 @@ export const MODELS: DeviceModel[] = [
     name: "Projector",
     category: "display",
     internalRouting: "none",
+    echoCancels: false,
     ports: [
       port({
         key: "hdmi_in",
@@ -415,6 +472,7 @@ export const MODELS: DeviceModel[] = [
     name: "House PA (internals unknown)",
     category: "blackbox",
     internalRouting: "passthrough",
+    echoCancels: false,
     ports: [
       port({
         key: "line_in",
@@ -437,6 +495,7 @@ export const MODELS: DeviceModel[] = [
     name: "Field Recorder",
     category: "recorder",
     internalRouting: "none",
+    echoCancels: false,
     ports: [
       port({ key: "in", direction: "in", signal: "audio_analog", connector: "trs", level: "line" }),
     ],
@@ -460,6 +519,7 @@ export const DEVICES: Device[] = [
   { id: "d_condenser", modelId: "m_mic_condenser", name: "コンデンサーマイク" },
   { id: "d_mixer", modelId: "m_mixer", name: "ミキサー" },
   { id: "d_mixer2", modelId: "m_mixer", name: "別室ミキサー" },
+  { id: "d_dsp", modelId: "m_dsp", name: "会議室DSP" },
   { id: "d_speaker", modelId: "m_speaker", name: "会場スピーカー" },
   { id: "d_speaker2", modelId: "m_speaker", name: "別室スピーカー" },
   { id: "d_pc", modelId: "m_pc", name: "配信PC" },

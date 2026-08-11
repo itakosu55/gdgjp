@@ -139,6 +139,15 @@ deliberately kept out of the hall speakers) is the very thing the room just deni
 is a `Fix` that **`canApplyFix` refuses** — machines may rewire, only people may assert facts about
 the world — so `LintPanel` renders it as a link to the space, not a button.
 
+**`DeviceModel.echoCancels` is a spec, and the wiring is still the judge** (§13.7). AEC needs one
+unit holding both ends of its reference, and the path proves that on its own only for a unit that
+is *both faces of the room* — a laptop's built-in pair, a speakerphone. A room DSP owns neither
+transducer and stands exactly where a plain mixer stands, so the catalog says which box has the
+hardware and `aecCanceller` still requires it to stand on **both legs** of the room hop before
+`remote-echo-acoustic` drops to warn. A model may claim the hardware; it may not claim the
+installation. Cutting both ways again: a declaring unit on only one leg raises
+`aec-reference-missing`, having nothing to subtract, or nothing to subtract it from.
+
 ## Three relationships, and only one of them is a link
 
 - **A cable** runs output → input and physically exists. `links` means this and nothing else, so

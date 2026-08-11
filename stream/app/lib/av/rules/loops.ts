@@ -78,7 +78,8 @@ export const loopRules: Rule = (graph) => {
     const acoustic = findPath(graph, outputs, inputs, { medium: "audio" });
     if (!acoustic) continue;
     const nodeIds = pathNodeIds(graph, acoustic);
-    const canceller = aecCanceller(graph, resolved, acoustic);
+    const hop = roomHop(graph, acoustic);
+    const canceller = hop ? aecCanceller(graph, resolved, hop, acoustic) : null;
     diagnostics.push({
       ruleId: "remote-echo-acoustic",
       severity: canceller ? "warn" : "critical",
@@ -90,6 +91,22 @@ export const loopRules: Rule = (graph) => {
       cycle: acoustic,
       fixes: isolationFixes(graph, acoustic),
     });
+
+    const stranded = hop ? strandedCanceller(graph, hop) : null;
+    if (stranded) {
+      diagnostics.push({
+        ruleId: "aec-reference-missing",
+        severity: "warn",
+        message: `${describeNode(graph, stranded.nodeId)} はエコーキャンセラを内蔵していますが、${
+          stranded.deaf
+            ? "部屋から戻ってくる音がこの機材を通っていません。消すべき音を受け取れません"
+            : "部屋へ送り出す音がこの機材を通っていません。自分が鳴らした音を参照できません"
+        } (${describePath(graph, nodeIds)})。マイクとスピーカーの両方を ${describeNode(graph, stranded.nodeId)} 経由にしないと、エコーキャンセラは働きません。`,
+        nodeIds: [stranded.nodeId],
+        linkIds: linkIdsOf(acoustic),
+        cycle: acoustic,
+      });
+    }
   }
 
   return diagnostics;
@@ -209,53 +226,98 @@ function transportCycle(graph: BuiltGraph, spaceId: string): GraphEdge[] | null 
  * Which unit's own canceller removes this echo, if any.
  *
  * AEC subtracts what was played out of what was picked up, so it needs one unit
- * holding both ends of that reference: the thing that played into the room has
- * to be the thing that heard the room back. A laptop's built-in pair is that
- * shape, and so is a speakerphone — one physical unit is both faces of the room
- * (§11.3). What the reference cannot survive is another box in between: the
- * moment a mixer or a house PA joins the path the signal has been re-timed and
- * re-mixed, it no longer matches what was played, and cancellation fails.
+ * holding both ends of that reference. Two shapes give it one, and only the
+ * first is something the wiring proves by itself: the unit that is both faces
+ * of the room (§11.3) — a laptop's built-in pair, a speakerphone — with nothing
+ * between it and the app, because a mixer or a house PA in between re-times and
+ * re-mixes what was played and the reference stops matching. Since a built-in
+ * transducer became a *port of the machine* (§11.4), who owns those two jacks
+ * is a fact the path states outright; the earlier version counted six nodes and
+ * checked their categories, because a cable drawn straight from a join to a
+ * speaker node was expressible and proved nothing about who owned that speaker.
  *
- * So the question is who owns the two jacks the path leaves and re-enters the
- * room by, and whether anything got between them and the app. Since a built-in
- * transducer became a *port of the machine* (§11.4) that is a fact the path
- * states outright rather than something inferred from its shape — the earlier
- * version counted six nodes and checked their categories, because a cable drawn
- * straight from a join to a speaker node was expressible and proved nothing
- * about who owned that speaker.
- *
- * It stays silent about a canceller that owns neither face, which is what a
- * room DSP is. Nothing in the catalog can claim that yet (§13.7).
+ * The second shape the wiring cannot prove. A room DSP owns neither transducer
+ * and stands exactly where a plain analog mixer stands, so `echoCancels` on the
+ * model is what tells them apart (§13.7). The wiring still decides: the claim
+ * counts only for a unit standing on both legs of the room hop, sending into
+ * the room and hearing it back, because that is what having a reference means.
+ * A model may claim the hardware; it may not claim the installation.
  */
 function aecCanceller(
   graph: BuiltGraph,
   join: ResolvedNode,
+  hop: RoomHop,
   path: readonly GraphEdge[],
 ): string | null {
   const host = join.node.hostNodeId;
   if (!host) return null;
 
-  // Into one room and straight back out of the same room.
-  const hops = path.filter((edge) => edge.kind === "space");
-  if (hops.length !== 2) return null;
-  const spaceId = hops[0]?.spaceId;
-  if (!spaceId || hops[1]?.spaceId !== spaceId) return null;
-  if (graph.spaces.get(spaceId)?.kind !== "acoustic") return null;
-
-  const canceller = faceOwner(graph, hops[0]);
-  if (!canceller || canceller !== faceOwner(graph, hops[1])) return null;
-
-  for (const edge of path) {
-    for (const vertexId of [edge.from, edge.to]) {
-      const vertex = graph.vertices.get(vertexId);
-      if (vertex?.type !== "port") continue;
-      if (vertex.nodeId !== join.id && vertex.nodeId !== host && vertex.nodeId !== canceller) {
-        return null;
-      }
-    }
+  const faces = faceOwner(graph, hop.into);
+  if (faces && faces === faceOwner(graph, hop.outOf)) {
+    const between = [...nodesTouched(graph, path)].filter(
+      (nodeId) => nodeId !== join.id && nodeId !== host && nodeId !== faces,
+    );
+    if (between.length === 0) return faces;
   }
 
-  return canceller;
+  for (const nodeId of hop.toRoom) {
+    if (!hop.fromRoom.has(nodeId)) continue;
+    if (graph.nodes.get(nodeId)?.model.echoCancels) return nodeId;
+  }
+  return null;
+}
+
+/**
+ * A unit that says it cancels echo, wired where it cannot.
+ *
+ * §13.5's condition on any declaration: it has to be able to create findings
+ * and not only remove them, or it is a lint-disable with a nicer name. This is
+ * the finding `echoCancels` creates. A DSP hearing a room whose PA is fed from
+ * somewhere it never sees has nothing to subtract, and a DSP feeding a room it
+ * never hears has nothing to subtract it from — the commonest way these rooms
+ * are got wrong, and invisible until someone joins the meeting.
+ */
+function strandedCanceller(
+  graph: BuiltGraph,
+  hop: RoomHop,
+): { nodeId: string; deaf: boolean } | null {
+  for (const nodeId of hop.toRoom) {
+    if (hop.fromRoom.has(nodeId)) continue;
+    if (graph.nodes.get(nodeId)?.model.echoCancels) return { nodeId, deaf: true };
+  }
+  for (const nodeId of hop.fromRoom) {
+    if (hop.toRoom.has(nodeId)) continue;
+    if (graph.nodes.get(nodeId)?.model.echoCancels) return { nodeId, deaf: false };
+  }
+  return null;
+}
+
+/** One acoustic room, entered once and left once — the only shape AEC addresses. */
+type RoomHop = {
+  into: GraphEdge;
+  outOf: GraphEdge;
+  /** What carries the sound to the room, and what carries it back. */
+  toRoom: Set<string>;
+  fromRoom: Set<string>;
+};
+
+function roomHop(graph: BuiltGraph, path: readonly GraphEdge[]): RoomHop | null {
+  const at = path.flatMap((edge, index) => (edge.kind === "space" ? [index] : []));
+  const [first, second] = at;
+  if (at.length !== 2 || first === undefined || second === undefined) return null;
+
+  const into = path[first];
+  const outOf = path[second];
+  if (!into || !outOf || !into.spaceId || into.spaceId !== outOf.spaceId) return null;
+  if (graph.spaces.get(into.spaceId)?.kind !== "acoustic") return null;
+
+  // The hop edges themselves carry the faces, so each leg keeps its own.
+  return {
+    into,
+    outOf,
+    toRoom: nodesTouched(graph, path.slice(0, first + 1)),
+    fromRoom: nodesTouched(graph, path.slice(second)),
+  };
 }
 
 /** The node holding the jack a room hop leaves the cables by, or arrives at. */
@@ -265,6 +327,18 @@ function faceOwner(graph: BuiltGraph, hop: GraphEdge): string | null {
     if (vertex?.type === "port") return vertex.nodeId;
   }
   return null;
+}
+
+/** Every node a stretch of path touches a jack of. */
+function nodesTouched(graph: BuiltGraph, edges: readonly GraphEdge[]): Set<string> {
+  const ids = new Set<string>();
+  for (const edge of edges) {
+    for (const vertexId of [edge.from, edge.to]) {
+      const vertex = graph.vertices.get(vertexId);
+      if (vertex?.type === "port") ids.add(vertex.nodeId);
+    }
+  }
+  return ids;
 }
 
 /** Every distinct space a cycle passes through, in traversal order. */
