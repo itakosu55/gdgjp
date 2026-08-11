@@ -141,9 +141,10 @@ test.describe("cables and device selections", () => {
 
     // l3 is a real cable: the mixer's USB send into the PC.
     await expect(cables.getByRole("row").filter({ hasText: "l3" })).toBeVisible();
-    // l4 is OBS picking that USB input as its audio source.
-    await expect(assignments.getByRole("row").filter({ hasText: "l4" })).toBeVisible();
-    await expect(cables.getByRole("row").filter({ hasText: "l4" })).toHaveCount(0);
+    // OBS picking that USB input as its audio source is not a link at all any
+    // more, so it has no id to find it by — the app jack names it (§12.4.1).
+    await expect(assignments.getByRole("row").filter({ hasText: "音声ソース" })).toBeVisible();
+    await expect(cables.getByRole("row").filter({ hasText: "音声ソース" })).toHaveCount(0);
   });
 
   test("the assignment form never asks which way round the link goes", async ({ page }) => {
@@ -279,11 +280,11 @@ test.describe("the inspector", () => {
 /**
  * The picture is the wiring surface now, not a report of one.
  *
- * Both relationships `links` carries are drawn the same way and told apart by
+ * A cable and a device selection are drawn the same way and told apart by
  * geometry alone — across the faces is a cable, along one face is an app
  * picking a device on the computer under it — which is the same rule
- * `orientHostAssignment` applies, so neither the drag nor the form ever has to
- * ask which way round the link goes.
+ * `buildAssignmentEdges` uses to derive the direction, so neither the drag nor
+ * the form ever has to ask which way round it goes.
  */
 test.describe("wiring on the canvas", () => {
   test("dragging an output onto an input draws a cable", async ({ page }) => {
@@ -315,7 +316,11 @@ test.describe("wiring on the canvas", () => {
     const assignments = page
       .locator("section")
       .filter({ has: page.getByRole("heading", { name: "アプリの入出力割り当て", exact: true }) });
-    await expect(assignments.getByRole("row").filter({ hasText: "l1" })).toBeVisible();
+    // No id column and no arrow: a selection is named by the app jack that made
+    // it, and its direction is derived rather than stored (§12.4.1).
+    const row = assignments.getByRole("row").filter({ hasText: "音声ソース" });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("USB");
   });
 
   test("clicking a device selects it in the inspector", async ({ page }) => {

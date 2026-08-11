@@ -501,19 +501,29 @@ export function twoJoinsInOneHall(): SetupDoc {
       { id: "n_mixer", deviceId: "d_mixer", spaceId: "sp_hall" },
       { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
       { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
-      { id: "n_join_stream", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+      {
+        id: "n_join_stream",
+        modelId: "m_meet",
+        hostNodeId: "n_pc",
+        spaceId: "sp_mtg",
+        assignments: [{ port: "spk_out", hostPort: "usb_out" }],
+      },
       { id: "n_laptop", deviceId: "d_laptop", spaceId: "sp_hall" },
-      { id: "n_join_laptop", modelId: "m_meet", hostNodeId: "n_laptop", spaceId: "sp_mtg" },
+      // One entry, not three: the built-in mic is a port of the laptop, so all
+      // that is left to write down is which jack the presenter's Meet listens
+      // on (§11.1).
+      {
+        id: "n_join_laptop",
+        modelId: "m_meet",
+        hostNodeId: "n_laptop",
+        spaceId: "sp_mtg",
+        assignments: [{ port: "mic_in", hostPort: "builtin_mic" }],
+      },
     ],
     links: [
       { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
       { id: "l2", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
-      { id: "l3", from: ["n_join_stream", "spk_out"], to: ["n_pc", "usb_out"] },
       { id: "l4", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
-      // One entry, not three: the built-in mic is a port of the laptop, so all
-      // that is left to write down is which jack the presenter's Meet listens
-      // on (§11.1).
-      { id: "l5", from: ["n_laptop", "builtin_mic"], to: ["n_join_laptop", "mic_in"] },
     ],
     routing: [{ nodeId: "n_mixer", inPort: "usb_in", bus: "main" }],
   };
@@ -544,6 +554,10 @@ export function satelliteRooms(): SetupDoc {
         modelId: "m_meet",
         hostNodeId: `n_pc_${suffix}`,
         spaceId: "sp_mtg",
+        assignments: [
+          { port: "mic_in", hostPort: "usb_in" },
+          { port: "spk_out", hostPort: "usb_out" },
+        ],
       },
     ],
     links: [
@@ -552,12 +566,6 @@ export function satelliteRooms(): SetupDoc {
         id: `l${suffix}2`,
         from: [`n_mixer_${suffix}`, "usb_send"],
         to: [`n_pc_${suffix}`, "usb_in"],
-      },
-      { id: `l${suffix}3`, from: [`n_pc_${suffix}`, "usb_in"], to: [`n_join_${suffix}`, "mic_in"] },
-      {
-        id: `l${suffix}4`,
-        from: [`n_join_${suffix}`, "spk_out"],
-        to: [`n_pc_${suffix}`, "usb_out"],
       },
       {
         id: `l${suffix}5`,
@@ -603,15 +611,22 @@ export function laptopOnlyMeeting(): SetupDoc {
     spaces: [{ id: "sp_hall", kind: "acoustic", label: "メインホール" }],
     nodes: [
       { id: "n_laptop", deviceId: "d_laptop", spaceId: "sp_hall" },
-      { id: "n_join", modelId: "m_meet", hostNodeId: "n_laptop" },
+      // §11.1's table, after the built-in transducers became ports and the
+      // selections left `links`: two ledger rows and two non-existent cables
+      // are gone, and what is left is the two device selections — which is the
+      // only part anybody actually chose. The document now has no cables at
+      // all, which is the truth about a laptop sitting on its own.
+      {
+        id: "n_join",
+        modelId: "m_meet",
+        hostNodeId: "n_laptop",
+        assignments: [
+          { port: "spk_out", hostPort: "builtin_spk" },
+          { port: "mic_in", hostPort: "builtin_mic" },
+        ],
+      },
     ],
-    // §11.1's table, after the built-in transducers became ports: two ledger
-    // rows and two non-existent cables are gone, and what is left is the two
-    // device selections — which is the only part anybody actually chose.
-    links: [
-      { id: "l1", from: ["n_join", "spk_out"], to: ["n_laptop", "builtin_spk"] },
-      { id: "l2", from: ["n_laptop", "builtin_mic"], to: ["n_join", "mic_in"] },
-    ],
+    links: [],
     routing: [],
   };
 }
@@ -635,12 +650,19 @@ export function speakerphoneMeeting(): SetupDoc {
     nodes: [
       { id: "n_phone", deviceId: "d_speakerphone", spaceId: "sp_room" },
       { id: "n_pc", deviceId: "d_pc", spaceId: "sp_room" },
-      { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+      {
+        id: "n_join",
+        modelId: "m_meet",
+        hostNodeId: "n_pc",
+        spaceId: "sp_mtg",
+        assignments: [
+          { port: "mic_in", hostPort: "usb_in" },
+          { port: "spk_out", hostPort: "usb_out" },
+        ],
+      },
     ],
     links: [
       { id: "l1", from: ["n_phone", "usb_out"], to: ["n_pc", "usb_in"] },
-      { id: "l2", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
-      { id: "l3", from: ["n_join", "spk_out"], to: ["n_pc", "usb_out"] },
       { id: "l4", from: ["n_pc", "usb_out"], to: ["n_phone", "usb_in"] },
     ],
     routing: [],
@@ -683,21 +705,29 @@ export function hybridMonitorMix(): SetupDoc {
           { key: "browser_audio:1", template: "browser_audio", label: "Meet", sourceId: "s1" },
           { key: "browser_video:1", template: "browser_video", label: "Meet", sourceId: "s1" },
         ],
+        // Both apps capture from the same USB input of the PC. Device
+        // selections, not cables — nobody plugs anything in to make these true.
+        assignments: [
+          { port: "audio_src:1", hostPort: "usb_in" },
+          { port: "monitor_out", hostPort: "usb_out" },
+        ],
       },
-      { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+      {
+        id: "n_join",
+        modelId: "m_meet",
+        hostNodeId: "n_pc",
+        spaceId: "sp_mtg",
+        assignments: [{ port: "mic_in", hostPort: "usb_in" }],
+      },
     ],
     links: [
       { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
       { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-      // Both apps capture from the same USB input of the PC. Device selections,
-      // not cables — nobody plugs anything in to make these true.
-      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
-      { id: "l4", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
       // OBS grabbing the Meet window never leaves the machine, so no OS audio
-      // device is involved. §12.4.1 — an ordinary link until it has its own name.
+      // device is involved. Two apps on one host, so the graph reads these as
+      // `capture` — the legitimate bypass §12.4.1 asked for a name for.
       { id: "l5", from: ["n_join", "spk_out"], to: ["n_obs", "browser_audio:1"] },
       { id: "l6", from: ["n_join", "cam_video_out"], to: ["n_obs", "browser_video:1"] },
-      { id: "l7", from: ["n_obs", "monitor_out"], to: ["n_pc", "usb_out"] },
       { id: "l8", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
       { id: "l9", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
     ],
@@ -765,15 +795,22 @@ export function mediaSourceOnStream(): SetupDoc {
             sourceId: "s1",
           },
         ],
+        assignments: [
+          { port: "audio_src:1", hostPort: "usb_in" },
+          { port: "monitor_out", hostPort: "usb_out" },
+        ],
       },
-      { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+      {
+        id: "n_join",
+        modelId: "m_meet",
+        hostNodeId: "n_pc",
+        spaceId: "sp_mtg",
+        assignments: [{ port: "mic_in", hostPort: "usb_in" }],
+      },
     ],
     links: [
       { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
       { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
-      { id: "l4", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
-      { id: "l5", from: ["n_obs", "monitor_out"], to: ["n_pc", "usb_out"] },
       { id: "l6", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
       { id: "l7", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
     ],
@@ -826,14 +863,19 @@ export function halfSharedScreen(): SetupDoc {
             sourceId: "s1",
           },
         ],
+        assignments: [{ port: "audio_src:1", hostPort: "usb_in" }],
       },
-      { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+      {
+        id: "n_join",
+        modelId: "m_meet",
+        hostNodeId: "n_pc",
+        spaceId: "sp_mtg",
+        assignments: [{ port: "mic_in", hostPort: "usb_in" }],
+      },
     ],
     links: [
       { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
       { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
-      { id: "l4", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
       // The share's picture was captured and its sound was not.
       { id: "l5", from: ["n_join", "share_video_out"], to: ["n_obs", "browser_video:1"] },
     ],

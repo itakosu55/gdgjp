@@ -174,6 +174,31 @@ describe("software nodes survive an edit", () => {
 
     expect(next.nodes[0]?.isolatedPorts).toEqual(["builtin_mic"]);
   });
+
+  it("keeps assignments when a node is updated", () => {
+    const doc: SetupDoc = {
+      schemaVersion: 1,
+      spaces: [],
+      nodes: [
+        {
+          id: "n_obs",
+          modelId: "m_obs",
+          hostNodeId: "n_pc",
+          assignments: [{ port: "audio_src:1", hostPort: "usb_in" }],
+        },
+      ],
+      links: [],
+      routing: [],
+    };
+
+    const next = applyOperation(doc, {
+      kind: "update-node",
+      nodeId: "n_obs",
+      patch: { label: "配信OBS" },
+    });
+
+    expect(next.nodes[0]?.assignments).toEqual([{ port: "audio_src:1", hostPort: "usb_in" }]);
+  });
 });
 
 describe("muting one jack", () => {
@@ -300,6 +325,25 @@ describe("sources", () => {
 
     expect(next.nodes[1]?.ports?.map((port) => port.key)).toEqual(["audio_src:1"]);
     expect(next.routing).toEqual([{ nodeId: "n_obs", inPort: "audio_src:1", bus: "program" }]);
+  });
+
+  // A deleted source takes its selection with it, the same cascade `links` and
+  // `routing` already get. Leaving one behind would be an `unknown-reference`
+  // about a jack nobody can see.
+  it("takes the device selection of a deleted source with it", () => {
+    const assigned = applyOperation(base, {
+      kind: "add-assignment",
+      nodeId: "n_obs",
+      port: "audio_src:1",
+      hostPort: "usb_in",
+    });
+    const next = applyOperation(assigned, {
+      kind: "remove-source",
+      nodeId: "n_obs",
+      portKey: "audio_src:1",
+    });
+
+    expect(next.nodes.find((node) => node.id === "n_obs")?.assignments).toBeUndefined();
   });
 
   it("renames both halves at once, and drops the name when it is cleared", () => {

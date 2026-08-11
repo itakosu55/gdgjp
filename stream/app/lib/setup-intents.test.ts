@@ -123,29 +123,67 @@ describe("applyIntent", () => {
       ],
     });
 
-    // The form never asks which way round it goes, and neither does the drag:
-    // out→out is the app playing into the machine, in→in is it capturing from
-    // one. Both ends are on the same face, so only the directions can say.
-    it("runs input to input when the app is capturing", () => {
+    // The form never asks which way round it goes, and neither does the drag —
+    // and since §12.4.1 neither does the document. A selection is stored as the
+    // pair of jacks, and the graph derives the direction from them, so `links`
+    // is left meaning cables and nothing else.
+    it("records a capture as a pair of jacks, not a link", () => {
       const next = applied(base, {
         intent: "add-assignment",
         app: "n2::audio_src:1",
         host: "n1::usb_in",
       });
 
-      expect(next.links).toEqual([{ id: "l1", from: ["n1", "usb_in"], to: ["n2", "audio_src:1"] }]);
+      expect(next.links).toEqual([]);
+      expect(next.nodes.find((node) => node.id === "n2")?.assignments).toEqual([
+        { port: "audio_src:1", hostPort: "usb_in" },
+      ]);
     });
 
-    it("runs output to output when the app is playing out", () => {
+    it("records playback the same way round as a capture", () => {
       const next = applied(base, {
         intent: "add-assignment",
         app: "n2::monitor_out",
         host: "n1::headphone_out",
       });
 
-      expect(next.links).toEqual([
-        { id: "l1", from: ["n2", "monitor_out"], to: ["n1", "headphone_out"] },
+      expect(next.links).toEqual([]);
+      expect(next.nodes.find((node) => node.id === "n2")?.assignments).toEqual([
+        { port: "monitor_out", hostPort: "headphone_out" },
       ]);
+    });
+
+    // One app input reads from one device, which is what the OS dialog does.
+    it("replaces the device an app port had already selected", () => {
+      const once = applied(base, {
+        intent: "add-assignment",
+        app: "n2::audio_src:1",
+        host: "n1::usb_in",
+      });
+      const twice = applied(once, {
+        intent: "add-assignment",
+        app: "n2::audio_src:1",
+        host: "n1::capture_in",
+      });
+
+      expect(twice.nodes.find((node) => node.id === "n2")?.assignments).toEqual([
+        { port: "audio_src:1", hostPort: "capture_in" },
+      ]);
+    });
+
+    it("removes a selection by the app port that made it", () => {
+      const added = applied(base, {
+        intent: "add-assignment",
+        app: "n2::audio_src:1",
+        host: "n1::usb_in",
+      });
+      const next = applied(added, {
+        intent: "remove-assignment",
+        nodeId: "n2",
+        port: "audio_src:1",
+      });
+
+      expect(next.nodes.find((node) => node.id === "n2")?.assignments).toBeUndefined();
     });
 
     it("refuses to cross the faces, which would be a cable and not a selection", () => {

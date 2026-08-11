@@ -21,6 +21,18 @@ function columnOf(layout: ReturnType<typeof layoutOf>, key: string): number | un
   return layout.nodes.find((node) => node.key === key)?.column;
 }
 
+/**
+ * A device selection, found by the app jack that made it.
+ *
+ * Assignments carry no `linkId` — they are not links any more (§12.4.1) — so
+ * the jack is what identifies one.
+ */
+function selectionOf(layout: ReturnType<typeof layoutOf>, portKey: string) {
+  return layout.edges.find(
+    (edge) => edge.kind === "host" && (edge.fromPort === portKey || edge.toPort === portKey),
+  );
+}
+
 function nodeOf(layout: ReturnType<typeof layoutOf>, key: string): LayoutNode | undefined {
   return layout.nodes.find((node) => node.key === key);
 }
@@ -223,14 +235,19 @@ describe("layoutGraph", () => {
         { id: "n_mixer", deviceId: "d_mixer" },
         { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
         { id: "n_pc", deviceId: "d_pc" },
-        { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
+        {
+          id: "n_obs",
+          deviceId: "d_obs",
+          hostNodeId: "n_pc",
+          ports: OBS_SOURCES,
+          assignments: [{ port: "audio_src:1", hostPort: "usb_in" }],
+        },
       ],
       links: [
         { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
         { id: "l2", from: ["n_mic2", "out"], to: ["n_mixer", "ch2"] },
         { id: "l3", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
         { id: "l4", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-        { id: "l5", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
       ],
       routing: [
         { nodeId: "n_mixer", inPort: "ch1", bus: "main" },
@@ -273,7 +290,7 @@ describe("layoutGraph", () => {
 
     it("draws the link to the host inside the column, not as a return path", () => {
       const layout = layoutOf(stage);
-      const hostLink = layout.edges.find((edge) => edge.linkId === "l5");
+      const hostLink = selectionOf(layout, "audio_src:1");
       expect(hostLink?.back).toBe(false);
       const spread = (hostLink?.points ?? []).map((point) => point.x);
       const pc = layout.nodes.find((node) => node.key === "n_pc");
@@ -302,12 +319,18 @@ describe("layoutGraph", () => {
         nodes: [
           { id: "n_mixer", deviceId: "d_mixer" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" },
+          {
+            id: "n_meet",
+            deviceId: "d_meet",
+            hostNodeId: "n_pc",
+            assignments: [
+              { port: "mic_in", hostPort: "usb_in" },
+              { port: "spk_out", hostPort: "usb_out" },
+            ],
+          },
         ],
         links: [
           { id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-          { id: "l2", from: ["n_pc", "usb_in"], to: ["n_meet", "mic_in"] },
-          { id: "l3", from: ["n_meet", "spk_out"], to: ["n_pc", "usb_out"] },
           { id: "l4", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
         ],
         routing: [{ nodeId: "n_mixer", inPort: "usb_in", bus: "usb" }],
@@ -316,8 +339,8 @@ describe("layoutGraph", () => {
       expect(nodeOf(layout, "n_meet")?.role).toBe("input");
       // Both ends of the device selection are one machine, so neither of them
       // is a return path.
-      expect(layout.edges.find((edge) => edge.linkId === "l2")?.back).toBe(false);
-      expect(layout.edges.find((edge) => edge.linkId === "l3")?.back).toBe(false);
+      expect(selectionOf(layout, "mic_in")?.back).toBe(false);
+      expect(selectionOf(layout, "spk_out")?.back).toBe(false);
     });
 
     // A join used only to send to a satellite room is a sink, not a source.
@@ -329,19 +352,23 @@ describe("layoutGraph", () => {
           { id: "n_mic", deviceId: "d_mic1" },
           { id: "n_mixer", deviceId: "d_mixer" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc" },
+          {
+            id: "n_join",
+            modelId: "m_meet",
+            hostNodeId: "n_pc",
+            assignments: [{ port: "mic_in", hostPort: "usb_in" }],
+          },
         ],
         links: [
           { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
           { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-          { id: "l3", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
         ],
         routing: [{ nodeId: "n_mixer", inPort: "ch1", bus: "usb" }],
       });
 
       expect(layout.nodes.find((node) => node.key === "n_join")?.role).toBe("output");
       expect(columnOf(layout, "n_join")).toBeGreaterThan(0);
-      expect(layout.edges.find((edge) => edge.linkId === "l3")?.back).toBe(false);
+      expect(selectionOf(layout, "mic_in")?.back).toBe(false);
     });
 
     it("still never uses more columns than there are nodes", () => {
@@ -378,14 +405,21 @@ describe("layoutGraph", () => {
       nodes: [
         { id: "n_mixer", deviceId: "d_mixer" },
         { id: "n_pc", deviceId: "d_pc" },
-        { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
-        { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" },
+        {
+          id: "n_obs",
+          deviceId: "d_obs",
+          hostNodeId: "n_pc",
+          ports: OBS_SOURCES,
+          assignments: [{ port: "audio_src:1", hostPort: "usb_in" }],
+        },
+        {
+          id: "n_meet",
+          deviceId: "d_meet",
+          hostNodeId: "n_pc",
+          assignments: [{ port: "mic_in", hostPort: "usb_in" }],
+        },
       ],
-      links: [
-        { id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-        { id: "l2", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
-        { id: "l3", from: ["n_pc", "usb_in"], to: ["n_meet", "mic_in"] },
-      ],
+      links: [{ id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] }],
       routing: [],
     } satisfies Partial<SetupDoc>;
 
@@ -411,7 +445,7 @@ describe("layoutGraph", () => {
     it("runs a device selection inside the machine, not around it", () => {
       const layout = layoutOf(machine);
       const pc = nodeOf(layout, "n_pc");
-      const selection = layout.edges.find((edge) => edge.linkId === "l2");
+      const selection = selectionOf(layout, "audio_src:1");
       expect(selection?.back).toBe(false);
       for (const point of selection?.points ?? []) {
         expect(point.x).toBeGreaterThanOrEqual(pc?.x ?? 0);

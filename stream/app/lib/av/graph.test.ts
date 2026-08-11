@@ -1,14 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { speakerphoneMeeting, testContext, twoJoinsInOneHall } from "./fixtures";
-import {
-  buildGraph,
-  isHostAssignment,
-  orientHostAssignment,
-  portVertexId,
-  spaceVertexId,
-  transportVertexId,
-} from "./graph";
-import type { PortRef, SetupDoc } from "./schema";
+import { buildGraph, portVertexId, spaceVertexId, transportVertexId } from "./graph";
+import type { SetupDoc } from "./schema";
 
 const HALL = { id: "sp_hall", kind: "acoustic", label: "メインホール" } as const;
 
@@ -182,14 +175,21 @@ describe("space coupling", () => {
   });
 });
 
-describe("host links", () => {
-  it("accepts a software output wired to a physical output of its host", () => {
+// A device selection is a fact about the app, and which way the signal runs
+// follows from the two jacks. Nobody writes the direction down any more, which
+// is the whole of §12.4.1's half of this.
+describe("device selections", () => {
+  it("points playback at the host when both jacks are outputs", () => {
     const graph = build({
       nodes: [
         { id: "n_pc", deviceId: "d_pc" },
-        { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" },
+        {
+          id: "n_meet",
+          deviceId: "d_meet",
+          hostNodeId: "n_pc",
+          assignments: [{ port: "spk_out", hostPort: "headphone_out" }],
+        },
       ],
-      links: [{ id: "l1", from: ["n_meet", "spk_out"], to: ["n_pc", "headphone_out"] }],
     });
 
     expect(graph.issues).toHaveLength(0);
@@ -203,13 +203,17 @@ describe("host links", () => {
     ).toBe(true);
   });
 
-  it("accepts a physical input of the host feeding the software", () => {
+  it("points a capture at the app when both jacks are inputs", () => {
     const graph = build({
       nodes: [
         { id: "n_pc", deviceId: "d_pc" },
-        { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" },
+        {
+          id: "n_meet",
+          deviceId: "d_meet",
+          hostNodeId: "n_pc",
+          assignments: [{ port: "mic_in", hostPort: "usb_in" }],
+        },
       ],
-      links: [{ id: "l1", from: ["n_pc", "usb_in"], to: ["n_meet", "mic_in"] }],
     });
 
     expect(graph.issues).toHaveLength(0);
@@ -218,16 +222,106 @@ describe("host links", () => {
     ).toBe(true);
   });
 
-  it("rejects the same shape between devices with no host relationship", () => {
+  it("refuses a pair whose directions disagree", () => {
     const graph = build({
       nodes: [
         { id: "n_pc", deviceId: "d_pc" },
-        { id: "n_meet", deviceId: "d_meet" },
+        {
+          id: "n_meet",
+          deviceId: "d_meet",
+          hostNodeId: "n_pc",
+          assignments: [{ port: "mic_in", hostPort: "headphone_out" }],
+        },
+      ],
+    });
+
+    expect(graph.issues).toContainEqual({
+      kind: "bad-assignment-direction",
+      nodeId: "n_meet",
+      portKey: "mic_in",
+    });
+  });
+
+  it("refuses an assignment made by a node that named no machine", () => {
+    const graph = build({
+      nodes: [
+        { id: "n_pc", deviceId: "d_pc" },
+        { id: "n_meet", deviceId: "d_meet", assignments: [{ port: "mic_in", hostPort: "usb_in" }] },
+      ],
+    });
+
+    expect(graph.issues).toContainEqual({ kind: "assignment-without-host", nodeId: "n_meet" });
+  });
+
+  // The shape that used to be the one legal exception in `links`. Now that
+  // selections live on the node, it is a selection somebody wrote the old way.
+  it("rejects an out→out link even between an app and its own host", () => {
+    const graph = build({
+      nodes: [
+        { id: "n_pc", deviceId: "d_pc" },
+        { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" },
       ],
       links: [{ id: "l1", from: ["n_meet", "spk_out"], to: ["n_pc", "headphone_out"] }],
     });
 
     expect(graph.issues).toContainEqual({ kind: "bad-link-direction", linkId: "l1" });
+  });
+});
+
+// OBS taking the Meet window on the same PC touches no jack, so it is neither a
+// cable nor a selection. Nothing declares it: two apps sharing one host is
+// already written down (§12.4.1).
+describe("a capture inside one machine", () => {
+  const apps = (hosts: [string | undefined, string | undefined]): Partial<SetupDoc> => ({
+    nodes: [
+      { id: "n_pc", deviceId: "d_pc" },
+      { id: "n_pc2", deviceId: "d_laptop" },
+      { id: "n_meet", deviceId: "d_meet", ...(hosts[0] ? { hostNodeId: hosts[0] } : {}) },
+      {
+        id: "n_obs",
+        deviceId: "d_obs",
+        ports: [{ key: "audio_src:1", template: "audio_src" }],
+        ...(hosts[1] ? { hostNodeId: hosts[1] } : {}),
+      },
+    ],
+    links: [{ id: "l1", from: ["n_meet", "spk_out"], to: ["n_obs", "audio_src:1"] }],
+  });
+
+  it("is a capture when both apps run on the same machine", () => {
+    const graph = build(apps(["n_pc", "n_pc"]));
+    expect(graph.issues).toHaveLength(0);
+    expect(
+      hasEdge(
+        graph,
+        portVertexId("n_meet", "spk_out"),
+        portVertexId("n_obs", "audio_src:1"),
+        "capture",
+      ),
+    ).toBe(true);
+  });
+
+  it("is an ordinary cable when the two apps are on different machines", () => {
+    const graph = build(apps(["n_pc", "n_pc2"]));
+    expect(
+      hasEdge(
+        graph,
+        portVertexId("n_meet", "spk_out"),
+        portVertexId("n_obs", "audio_src:1"),
+        "cable",
+      ),
+    ).toBe(true);
+  });
+
+  it("is an ordinary cable when neither app named a machine", () => {
+    const graph = build(apps([undefined, undefined]));
+    expect(
+      hasEdge(
+        graph,
+        portVertexId("n_meet", "spk_out"),
+        portVertexId("n_obs", "audio_src:1"),
+        "cable",
+      ),
+    ).toBe(true);
   });
 });
 
@@ -242,79 +336,6 @@ describe("signal media", () => {
     });
 
     expect(graph.issues).toContainEqual({ kind: "link-media-mismatch", linkId: "l1" });
-  });
-});
-
-// `links` carries two relationships that behave nothing alike, and the editor
-// has to tell them apart to stop asking people to know the out→out rule.
-describe("telling a device selection from a cable", () => {
-  const setup = doc({
-    nodes: [
-      { id: "n_mixer", deviceId: "d_mixer" },
-      { id: "n_pc", deviceId: "d_pc" },
-      { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc" },
-    ],
-    links: [
-      { id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-      { id: "l2", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
-      { id: "l3", from: ["n_obs", "monitor_out"], to: ["n_pc", "headphone_out"] },
-    ],
-  });
-
-  it("calls a cable a cable", () => {
-    const cable = setup.links.find((link) => link.id === "l1");
-    expect(cable && isHostAssignment(setup, cable)).toBe(false);
-  });
-
-  it("recognises a selection whichever way round the link is stored", () => {
-    for (const id of ["l2", "l3"]) {
-      const link = setup.links.find((entry) => entry.id === id);
-      expect(link && isHostAssignment(setup, link)).toBe(true);
-    }
-  });
-
-  it("does not mistake two unrelated nodes for a host pair", () => {
-    const unrelated = doc({
-      nodes: [
-        { id: "n_mixer", deviceId: "d_mixer" },
-        { id: "n_pc", deviceId: "d_pc" },
-      ],
-      links: [{ id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] }],
-    });
-    const link = unrelated.links[0];
-    expect(link && isHostAssignment(unrelated, link)).toBe(false);
-  });
-});
-
-describe("orienting a device selection", () => {
-  const app = ["n_obs", "audio_src:1"] as PortRef;
-  const host = ["n_pc", "usb_in"] as PortRef;
-
-  // An app capturing from a jack: the signal runs host → app.
-  it("points a capture at the app", () => {
-    const oriented = orientHostAssignment(
-      { ref: app, direction: "in" },
-      { ref: host, direction: "in" },
-    );
-    expect(oriented).toEqual({ from: host, to: app });
-  });
-
-  // An app playing into a jack: the signal runs app → host.
-  it("points playback at the host", () => {
-    const oriented = orientHostAssignment(
-      { ref: ["n_obs", "monitor_out"], direction: "out" },
-      { ref: ["n_pc", "headphone_out"], direction: "out" },
-    );
-    expect(oriented).toEqual({
-      from: ["n_obs", "monitor_out"],
-      to: ["n_pc", "headphone_out"],
-    });
-  });
-
-  it("refuses a pair whose directions disagree", () => {
-    expect(
-      orientHostAssignment({ ref: app, direction: "in" }, { ref: host, direction: "out" }),
-    ).toBeNull();
   });
 });
 

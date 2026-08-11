@@ -1,14 +1,7 @@
 import { placeKeyOf } from "./places";
 import { resolvePorts, unknownTemplates } from "./ports";
-import type { PortRef, SetupDoc, SetupLink, SetupNode, Space } from "./schema";
-import type {
-  CouplingDirection,
-  Device,
-  DeviceModel,
-  DeviceModelPort,
-  Medium,
-  PortDirection,
-} from "./types";
+import type { SetupDoc, SetupNode, Space } from "./schema";
+import type { CouplingDirection, Device, DeviceModel, DeviceModelPort, Medium } from "./types";
 import { SPACE_MEDIA, portMedia } from "./types";
 
 /**
@@ -18,8 +11,10 @@ import { SPACE_MEDIA, portMedia } from "./types";
  * find howling, remote-participant echo and the infinite mirror:
  *
  * - `cable`    — an explicit link, output port → input port
- * - `host`     — a software node wired to a physical port of the computer it
- *                runs on (OBS's monitor output going to the headphone jack)
+ * - `host`     — a device selection: an app and a jack of the computer it runs
+ *                on (OBS's monitor output going to the headphone jack)
+ * - `capture`  — one app taking another's window on the same machine, which
+ *                touches no jack at all
  * - `internal` — inside a device, from an input to the outputs of a bus
  * - `space`    — the implicit hop through the room: speaker → air → mic
  */
@@ -69,7 +64,7 @@ export type SpaceVertex =
 
 export type Vertex = PortVertex | SpaceVertex;
 
-export type EdgeKind = "cable" | "host" | "internal" | "space";
+export type EdgeKind = "cable" | "host" | "internal" | "space" | "capture";
 
 export type GraphEdge = {
   id: string;
@@ -81,6 +76,7 @@ export type GraphEdge = {
   nodeId?: string;
   busKey?: string;
   spaceId?: string;
+  assignment?: { nodeId: string; port: string; hostPort: string };
 };
 
 /**
@@ -101,7 +97,11 @@ export type ResolutionIssue =
   | { kind: "link-media-mismatch"; linkId: string }
   | { kind: "unknown-route-node"; nodeId: string }
   | { kind: "unknown-route-port"; nodeId: string; portKey: string }
-  | { kind: "unknown-route-bus"; nodeId: string; busKey: string };
+  | { kind: "unknown-route-bus"; nodeId: string; busKey: string }
+  | { kind: "assignment-without-host"; nodeId: string }
+  | { kind: "unknown-assignment-port"; nodeId: string; portKey: string }
+  | { kind: "bad-assignment-direction"; nodeId: string; portKey: string }
+  | { kind: "assignment-media-mismatch"; nodeId: string; portKey: string };
 
 export type ResolvedNode = {
   id: string;
@@ -187,6 +187,7 @@ export function buildGraph(doc: SetupDoc, catalog: CatalogLookup): BuiltGraph {
 
   const edges: GraphEdge[] = [
     ...buildLinkEdges(doc, nodes, issues),
+    ...buildAssignmentEdges(nodes, issues),
     ...buildInternalEdges(doc, nodes, issues),
     ...buildSpaceEdges(members, spaces),
   ];
@@ -299,21 +300,11 @@ function buildLinkEdges(
       continue;
     }
 
-    // A cable runs output → input. The two host cases are the exception: from
-    // inside a computer, a physical output is a *sink* (the app plays into it)
-    // and a physical input is a *source* (the app captures from it). Modelling
-    // that is what makes "Meet is playing out of the speakers" visible.
-    const softwareToHostOutput =
-      fromNode.node.hostNodeId === toNode.id &&
-      fromPort.direction === "out" &&
-      toPort.direction === "out";
-    const hostInputToSoftware =
-      toNode.node.hostNodeId === fromNode.id &&
-      fromPort.direction === "in" &&
-      toPort.direction === "in";
-    const isCable = fromPort.direction === "out" && toPort.direction === "in";
-
-    if (!isCable && !softwareToHostOutput && !hostInputToSoftware) {
+    // A cable runs output → input, and since assignments moved onto the node
+    // that is now the only shape `links` has. An out→out link is a device
+    // selection somebody wrote the old way, and saying so is more use than
+    // quietly accepting it.
+    if (fromPort.direction !== "out" || toPort.direction !== "in") {
       issues.push({ kind: "bad-link-direction", linkId: link.id });
       continue;
     }
@@ -324,14 +315,114 @@ function buildLinkEdges(
       continue;
     }
 
+    // OBS grabbing the Meet window on the same PC is neither a cable nor a
+    // device selection: no jack is involved and the OS mixer is legitimately
+    // bypassed. Nothing new is written down for it — two apps sharing one host
+    // is already in the document, and asking for it again would be a second
+    // place to get it wrong.
+    const host = fromNode.node.hostNodeId;
+    const isCapture = Boolean(host) && host === toNode.node.hostNodeId;
+
     edges.push({
       id: `link:${link.id}`,
       from: portVertexId(fromNodeId, fromPortKey),
       to: portVertexId(toNodeId, toPortKey),
-      kind: isCable ? "cable" : "host",
+      kind: isCapture ? "capture" : "cable",
       media,
       linkId: link.id,
     });
+  }
+
+  return edges;
+}
+
+/**
+ * The device selections, read off the nodes that made them.
+ *
+ * Which way the signal runs is **derived here and never written down**. From
+ * inside a computer a physical output is a *sink* (the app plays into it) and a
+ * physical input is a *source* (the app captures from it), so an app port and a
+ * host port that share a direction already say which end is upstream. While
+ * this lived in `links` the document had to carry that orientation, which meant
+ * every writer of a document — a person, and later the AI phase — had to know
+ * that this one relationship runs out→out.
+ */
+function buildAssignmentEdges(
+  nodes: Map<string, ResolvedNode>,
+  issues: ResolutionIssue[],
+): GraphEdge[] {
+  const edges: GraphEdge[] = [];
+
+  for (const resolved of nodes.values()) {
+    const assignments = resolved.node.assignments;
+    if (!assignments || assignments.length === 0) continue;
+
+    if (!resolved.node.hostNodeId) {
+      issues.push({ kind: "assignment-without-host", nodeId: resolved.id });
+      continue;
+    }
+
+    const hostNode = nodes.get(resolved.node.hostNodeId);
+    if (!hostNode) continue;
+
+    for (const assignment of assignments) {
+      const appPort = resolved.ports.get(assignment.port);
+      const hostPort = hostNode.ports.get(assignment.hostPort);
+
+      if (!appPort) {
+        issues.push({
+          kind: "unknown-assignment-port",
+          nodeId: resolved.id,
+          portKey: assignment.port,
+        });
+        continue;
+      }
+      if (!hostPort) {
+        issues.push({
+          kind: "unknown-assignment-port",
+          nodeId: hostNode.id,
+          portKey: assignment.hostPort,
+        });
+        continue;
+      }
+
+      if (appPort.direction !== hostPort.direction) {
+        issues.push({
+          kind: "bad-assignment-direction",
+          nodeId: resolved.id,
+          portKey: assignment.port,
+        });
+        continue;
+      }
+
+      const media = sharedMedia(portMedia(appPort.signal), portMedia(hostPort.signal));
+      if (media.length === 0) {
+        issues.push({
+          kind: "assignment-media-mismatch",
+          nodeId: resolved.id,
+          portKey: assignment.port,
+        });
+        continue;
+      }
+
+      const fromId = appPort.direction === "out" ? resolved.id : hostNode.id;
+      const fromPortKey = appPort.direction === "out" ? appPort.key : hostPort.key;
+      const toId = appPort.direction === "out" ? hostNode.id : resolved.id;
+      const toPortKey = appPort.direction === "out" ? hostPort.key : appPort.key;
+
+      edges.push({
+        id: `assign:${resolved.id}:${assignment.port}:${assignment.hostPort}`,
+        from: portVertexId(fromId, fromPortKey),
+        to: portVertexId(toId, toPortKey),
+        kind: "host",
+        media,
+        assignment: {
+          nodeId: resolved.id,
+          port: assignment.port,
+          hostPort: assignment.hostPort,
+        },
+      });
+    }
   }
 
   return edges;
@@ -578,41 +669,6 @@ function buildSpaceEdges(members: SpaceMembers, spaces: Map<string, Space>): Gra
   return edges;
 }
 
-/**
- * Is this link a device selection rather than a cable?
- *
- * `links` carries two relationships that behave nothing alike. A cable runs
- * output → input, physically exists, and someone can unplug it. A link between
- * an app and the computer it runs on is a setting — which device OBS captures
- * from, which device it monitors on — and runs out→out or in→in. The editor
- * has to tell them apart to stop asking people to know that rule.
- */
-export function isHostAssignment(doc: SetupDoc, link: SetupLink): boolean {
-  const from = doc.nodes.find((node) => node.id === link.from[0]);
-  const to = doc.nodes.find((node) => node.id === link.to[0]);
-  if (!from || !to) return false;
-  return from.hostNodeId === to.id || to.hostNodeId === from.id;
-}
-
-/**
- * Orders the two ends of a device selection into a link.
- *
- * An app reading from a jack and an app playing into one are the same
- * relationship pointing opposite ways, and `buildLinkEdges` can only tell them
- * apart once they are oriented. Deriving the order from the port directions is
- * what lets a form ask "which jack does this app use" instead of asking someone
- * to remember that this one case runs out→out.
- */
-export function orientHostAssignment(
-  app: { ref: PortRef; direction: PortDirection },
-  host: { ref: PortRef; direction: PortDirection },
-): { from: PortRef; to: PortRef } | null {
-  if (app.direction !== host.direction) return null;
-  return app.direction === "out"
-    ? { from: app.ref, to: host.ref }
-    : { from: host.ref, to: app.ref };
-}
-
 /** Every port vertex of a node matching `medium` and `direction`. */
 export function portVertices(
   resolved: ResolvedNode,
@@ -647,5 +703,7 @@ export function isPortWired(graph: BuiltGraph, nodeId: string, port: DeviceModel
     port.direction === "out"
       ? (graph.outgoing.get(vertexId) ?? [])
       : (graph.incoming.get(vertexId) ?? []);
-  return edges.some((edge) => edge.kind === "cable" || edge.kind === "host");
+  return edges.some(
+    (edge) => edge.kind === "cable" || edge.kind === "host" || edge.kind === "capture",
+  );
 }

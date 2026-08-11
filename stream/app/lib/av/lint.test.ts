@@ -94,14 +94,21 @@ describe("acoustic feedback", () => {
           { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
           { id: "n_mixer", deviceId: "d_mixer" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
+          {
+            id: "n_obs",
+            deviceId: "d_obs",
+            hostNodeId: "n_pc",
+            ports: OBS_SOURCES,
+            assignments: [
+              { port: "audio_src:1", hostPort: "usb_in" },
+              { port: "monitor_out", hostPort: "headphone_out" },
+            ],
+          },
           { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
         ],
         links: [
           { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
           { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-          { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
-          { id: "l4", from: ["n_obs", "monitor_out"], to: ["n_pc", "headphone_out"] },
           { id: "l5", from: ["n_pc", "headphone_out"], to: ["n_speaker", "in"] },
         ],
         routing: [
@@ -121,12 +128,18 @@ describe("remote participant echo", () => {
   const nodes = [
     { id: "n_mixer", deviceId: "d_mixer" },
     { id: "n_pc", deviceId: "d_pc" },
-    { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" },
+    {
+      id: "n_meet",
+      deviceId: "d_meet",
+      hostNodeId: "n_pc",
+      assignments: [
+        { port: "mic_in", hostPort: "usb_in" },
+        { port: "spk_out", hostPort: "usb_out" },
+      ],
+    },
   ];
   const links = [
     { id: "l1", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-    { id: "l2", from: ["n_pc", "usb_in"], to: ["n_meet", "mic_in"] },
-    { id: "l3", from: ["n_meet", "spk_out"], to: ["n_pc", "usb_out"] },
     { id: "l4", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
   ] satisfies SetupDoc["links"];
 
@@ -164,13 +177,19 @@ describe("remote participant echo", () => {
           { id: "n_mixer", deviceId: "d_mixer" },
           { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_pc" },
+          {
+            id: "n_meet",
+            deviceId: "d_meet",
+            hostNodeId: "n_pc",
+            assignments: [
+              { port: "mic_in", hostPort: "usb_in" },
+              { port: "spk_out", hostPort: "headphone_out" },
+            ],
+          },
         ],
         links: [
           { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
           { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-          { id: "l3", from: ["n_pc", "usb_in"], to: ["n_meet", "mic_in"] },
-          { id: "l4", from: ["n_meet", "spk_out"], to: ["n_pc", "headphone_out"] },
           { id: "l5", from: ["n_pc", "headphone_out"], to: ["n_speaker", "in"] },
         ],
         routing: [{ nodeId: "n_mixer", inPort: "ch1", bus: "usb" }],
@@ -303,12 +322,17 @@ describe("stream coverage", () => {
           { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
           { id: "n_mixer", deviceId: "d_mixer" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
+          {
+            id: "n_obs",
+            deviceId: "d_obs",
+            hostNodeId: "n_pc",
+            ports: OBS_SOURCES,
+            assignments: [{ port: "audio_src:1", hostPort: "usb_in" }],
+          },
         ],
         links: [
           { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
           { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-          { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
         ],
         routing: [{ nodeId: "n_mixer", inPort: "ch1", bus: "usb" }],
       }),
@@ -340,12 +364,17 @@ describe("who hears it", () => {
       { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
       { id: "n_mixer", deviceId: "d_mixer" },
       { id: "n_pc", deviceId: "d_pc" },
-      { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
+      {
+        id: "n_obs",
+        deviceId: "d_obs",
+        hostNodeId: "n_pc",
+        ports: OBS_SOURCES,
+        assignments: [{ port: "audio_src:1", hostPort: "usb_in" }],
+      },
     ],
     links: [
       { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
       { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
-      { id: "l3", from: ["n_pc", "usb_in"], to: ["n_obs", "audio_src:1"] },
     ] satisfies SetupDoc["links"],
     routing: [
       { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
@@ -381,12 +410,15 @@ describe("who hears it", () => {
         spaces: [HALL, MEETING],
         nodes: [
           ...onStreamOnly.nodes,
-          { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc", spaceId: "sp_mtg" },
+          {
+            id: "n_join",
+            modelId: "m_meet",
+            hostNodeId: "n_pc",
+            spaceId: "sp_mtg",
+            assignments: [{ port: "mic_in", hostPort: "usb_in" }],
+          },
         ],
-        links: [
-          ...onStreamOnly.links,
-          { id: "l4", from: ["n_pc", "usb_in"], to: ["n_join", "mic_in"] },
-        ],
+        links: onStreamOnly.links,
         routing: onStreamOnly.routing,
       }),
       testContext(),
@@ -582,14 +614,21 @@ describe("infinite mirror", () => {
           { id: "n_cam", deviceId: "d_camera", spaceId: "sp_screen" },
           { id: "n_cap", deviceId: "d_capture" },
           { id: "n_pc", deviceId: "d_pc" },
-          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
+          {
+            id: "n_obs",
+            deviceId: "d_obs",
+            hostNodeId: "n_pc",
+            ports: OBS_SOURCES,
+            assignments: [
+              { port: "video_src:1", hostPort: "capture_in" },
+              { port: "program_video", hostPort: "hdmi_out" },
+            ],
+          },
           { id: "n_proj", deviceId: "d_projector", spaceId: "sp_screen" },
         ],
         links: [
           { id: "l1", from: ["n_cam", "hdmi_out"], to: ["n_cap", "hdmi_in"] },
           { id: "l2", from: ["n_cap", "usb_out"], to: ["n_pc", "capture_in"] },
-          { id: "l3", from: ["n_pc", "capture_in"], to: ["n_obs", "video_src:1"] },
-          { id: "l4", from: ["n_obs", "program_video"], to: ["n_pc", "hdmi_out"] },
           { id: "l5", from: ["n_pc", "hdmi_out"], to: ["n_proj", "hdmi_in"] },
         ],
         routing: [{ nodeId: "n_obs", inPort: "video_src:1", bus: "program" }],
@@ -925,5 +964,78 @@ describe("a broadcast app's sources", () => {
 
     expect(echo?.severity).toBe("critical");
     expect(echo?.nodeIds).toContain("n_join");
+  });
+});
+
+/**
+ * §11.8's remaining hole, closed by §12.4.1's vocabulary.
+ *
+ * A cable straight into an app was indistinguishable from OBS taking the Meet
+ * window on the same machine: both ran out→in and neither touched a jack. The
+ * difference was always in the document — one pair of apps shares a host and
+ * the other does not — and naming the legitimate bypass is what made the
+ * mistake sayable.
+ */
+describe("a cable that bypasses the machine", () => {
+  const MEETING = { id: "sp_mtg", kind: "transport", label: "登壇 Meet" } as const;
+
+  const bypassed = (join: Record<string, unknown>) =>
+    doc({
+      spaces: [HALL, MEETING],
+      nodes: [
+        { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+        { id: "n_pc", deviceId: "d_pc" },
+        { id: "n_join", modelId: "m_meet", spaceId: "sp_mtg", ...join },
+      ],
+      links: [{ id: "l1", from: ["n_mic", "out"], to: ["n_join", "mic_in"] }],
+    });
+
+  it("reports a mic cabled straight into an app, past the PC running it", () => {
+    const found = lint(bypassed({ hostNodeId: "n_pc" }), testContext());
+
+    const bypass = found.find((d) => d.ruleId === "cable-bypasses-host");
+    expect(bypass?.severity).toBe("warn");
+    expect(bypass?.nodeIds).toEqual(["n_mic", "n_join"]);
+    expect(bypass?.linkIds).toEqual(["l1"]);
+    // §4.3: the offered fix has to be an operation somebody can really perform.
+    expect(bypass?.fixes).toContainEqual({ kind: "remove-link", linkId: "l1" });
+  });
+
+  // §9.3 — a meeting whose PC nobody wrote down is a finished document, and
+  // there is no machine for the cable to have bypassed.
+  it("says nothing when the app named no machine", () => {
+    const found = lint(bypassed({}), testContext());
+
+    expect(ruleIds(found)).not.toContain("cable-bypasses-host");
+  });
+
+  // The whole point of the new edge kind: OBS grabbing the Meet window is two
+  // apps on one host, and correct.
+  it("says nothing about a capture inside one machine", () => {
+    const found = lint(hybridMonitorMix(), testContext());
+
+    expect(ruleIds(found)).not.toContain("cable-bypasses-host");
+  });
+
+  it("still reports a cable between apps on two different machines", () => {
+    const found = lint(
+      doc({
+        nodes: [
+          { id: "n_pc", deviceId: "d_pc" },
+          { id: "n_laptop", deviceId: "d_laptop" },
+          { id: "n_meet", deviceId: "d_meet", hostNodeId: "n_laptop" },
+          {
+            id: "n_obs",
+            deviceId: "d_obs",
+            hostNodeId: "n_pc",
+            ports: [{ key: "audio_src:1", template: "audio_src" }],
+          },
+        ],
+        links: [{ id: "l1", from: ["n_meet", "spk_out"], to: ["n_obs", "audio_src:1"] }],
+      }),
+      testContext(),
+    );
+
+    expect(ruleIds(found)).toContain("cable-bypasses-host");
   });
 });

@@ -85,13 +85,18 @@ function howlingDoc() {
       { id: "n2", deviceId: "e2e_dev_mixer" },
       { id: "n3", deviceId: "e2e_dev_speaker", spaceId: "sp1" },
       { id: "n4", deviceId: "e2e_dev_pc" },
-      { id: "n5", modelId: MODELS.obs, hostNodeId: "n4", ports: OBS_SOURCES },
+      {
+        id: "n5",
+        modelId: MODELS.obs,
+        hostNodeId: "n4",
+        ports: OBS_SOURCES,
+        assignments: [{ port: "audio_src:1", hostPort: "usb_in" }],
+      },
     ],
     links: [
       { id: "l1", from: ["n1", "out"], to: ["n2", "ch1"] },
       { id: "l2", from: ["n2", "main_out"], to: ["n3", "in"] },
       { id: "l3", from: ["n2", "usb_send"], to: ["n4", "usb_in"] },
-      { id: "l4", from: ["n4", "usb_in"], to: ["n5", "audio_src:1"] },
     ],
     // ch1 also goes to USB, so cutting MAIN must silence the room without
     // silencing the stream.
@@ -110,12 +115,18 @@ function mixMinusDoc() {
     nodes: [
       { id: "n1", deviceId: "e2e_dev_mixer" },
       { id: "n2", deviceId: "e2e_dev_pc" },
-      { id: "n3", modelId: MODELS.meet, hostNodeId: "n2" },
+      {
+        id: "n3",
+        modelId: MODELS.meet,
+        hostNodeId: "n2",
+        assignments: [
+          { port: "mic_in", hostPort: "usb_in" },
+          { port: "spk_out", hostPort: "usb_out" },
+        ],
+      },
     ],
     links: [
       { id: "l1", from: ["n1", "usb_send"], to: ["n2", "usb_in"] },
-      { id: "l2", from: ["n2", "usb_in"], to: ["n3", "mic_in"] },
-      { id: "l3", from: ["n3", "spk_out"], to: ["n2", "usb_out"] },
       { id: "l4", from: ["n2", "usb_out"], to: ["n1", "usb_in"] },
     ],
     routing: [{ nodeId: "n1", inPort: "usb_in", bus: "usb" }],
@@ -159,18 +170,28 @@ function transportEchoDoc() {
       { id: "n2", deviceId: "e2e_dev_mixer", spaceId: "sp1" },
       { id: "n3", deviceId: "e2e_dev_speaker", spaceId: "sp1" },
       { id: "n4", deviceId: "e2e_dev_pc", spaceId: "sp1" },
-      { id: "n5", modelId: MODELS.meet, hostNodeId: "n4", spaceId: "sp2" },
+      {
+        id: "n5",
+        modelId: MODELS.meet,
+        hostNodeId: "n4",
+        spaceId: "sp2",
+        assignments: [{ port: "spk_out", hostPort: "usb_out" }],
+      },
       { id: "n6", deviceId: "e2e_dev_laptop", spaceId: "sp1" },
-      { id: "n7", modelId: MODELS.meet, hostNodeId: "n6", spaceId: "sp2" },
+      // The built-in mic is a port of the laptop, so the presenter's machine
+      // costs one entry: which jack their Meet listens on.
+      {
+        id: "n7",
+        modelId: MODELS.meet,
+        hostNodeId: "n6",
+        spaceId: "sp2",
+        assignments: [{ port: "mic_in", hostPort: "builtin_mic" }],
+      },
     ],
     links: [
       { id: "l1", from: ["n1", "out"], to: ["n2", "ch1"] },
       { id: "l2", from: ["n2", "main_out"], to: ["n3", "in"] },
-      { id: "l3", from: ["n5", "spk_out"], to: ["n4", "usb_out"] },
       { id: "l4", from: ["n4", "usb_out"], to: ["n2", "usb_in"] },
-      // The built-in mic is a port of the laptop, so the presenter's machine
-      // costs one entry: which jack their Meet listens on.
-      { id: "l5", from: ["n6", "builtin_mic"], to: ["n7", "mic_in"] },
     ],
     routing: [{ nodeId: "n2", inPort: "usb_in", bus: "main" }],
   };
@@ -254,15 +275,19 @@ function hybridDoc() {
           { key: "browser_audio:1", template: "browser_audio", label: "E2E Meet", sourceId: "s1" },
           { key: "browser_video:1", template: "browser_video", label: "E2E Meet", sourceId: "s1" },
         ],
+        assignments: [
+          { port: "audio_src:1", hostPort: "usb_in" },
+          { port: "monitor_out", hostPort: "usb_out" },
+        ],
       },
       { id: "n6", modelId: MODELS.meet, hostNodeId: "n4", spaceId: "sp2" },
     ],
     links: [
       { id: "l1", from: ["n1", "out"], to: ["n2", "ch1"] },
       { id: "l2", from: ["n2", "usb_send"], to: ["n4", "usb_in"] },
-      { id: "l3", from: ["n4", "usb_in"], to: ["n5", "audio_src:1"] },
+      // Two apps on the one PC: OBS takes the Meet window, which is a capture
+      // and not a cable.
       { id: "l4", from: ["n6", "spk_out"], to: ["n5", "browser_audio:1"] },
-      { id: "l5", from: ["n5", "monitor_out"], to: ["n4", "usb_out"] },
       { id: "l6", from: ["n4", "usb_out"], to: ["n2", "usb_in"] },
       { id: "l7", from: ["n2", "main_out"], to: ["n3", "in"] },
     ],

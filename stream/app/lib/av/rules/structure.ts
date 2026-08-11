@@ -1,4 +1,5 @@
 import type { Diagnostic, Rule } from "../diagnostics";
+import type { BuiltGraph, ResolvedNode } from "../graph";
 import { isPortWired, nodeLabel } from "../graph";
 import { spaceNeedOf } from "../types";
 
@@ -85,14 +86,54 @@ export const structureRules: Rule = (graph, ctx) => {
           linkIds: [issue.linkId],
         });
         break;
+      // Since assignments moved onto the node, out→out is no longer the one
+      // legal exception here — it is a device selection written the old way,
+      // and the fix is to delete the link and assign the jack.
       case "bad-link-direction":
         diagnostics.push({
           ruleId: "link-direction",
           severity: "error",
-          message: "結線の向きが不正です。出力端子から入力端子へ接続してください。",
+          message:
+            "結線の向きが不正です。出力端子から入力端子へ接続してください。アプリが PC の端子を使う設定は結線ではなく、割り当てです。",
           nodeIds: [],
           linkIds: [issue.linkId],
           fixes: [{ kind: "remove-link", linkId: issue.linkId }],
+        });
+        break;
+      case "assignment-without-host":
+        diagnostics.push({
+          ruleId: UNKNOWN_REFERENCE,
+          severity: "error",
+          message: "どの PC で動いているか決まっていないまま、端子が割り当てられています。",
+          nodeIds: [issue.nodeId],
+          linkIds: [],
+        });
+        break;
+      case "unknown-assignment-port":
+        diagnostics.push({
+          ruleId: UNKNOWN_REFERENCE,
+          severity: "error",
+          message: `割り当てが存在しない端子を参照しています (${issue.portKey})。`,
+          nodeIds: [issue.nodeId],
+          linkIds: [],
+        });
+        break;
+      case "bad-assignment-direction":
+        diagnostics.push({
+          ruleId: "link-direction",
+          severity: "error",
+          message: `割り当ての入出力が揃っていません (${issue.portKey})。アプリの入力には PC の入力を、出力には出力を選んでください。`,
+          nodeIds: [issue.nodeId],
+          linkIds: [],
+        });
+        break;
+      case "assignment-media-mismatch":
+        diagnostics.push({
+          ruleId: "signal-mismatch",
+          severity: "error",
+          message: `音声端子と映像端子など、成立しない信号種別を割り当てています (${issue.portKey})。`,
+          nodeIds: [issue.nodeId],
+          linkIds: [],
         });
         break;
       case "link-media-mismatch":
@@ -267,5 +308,61 @@ export const structureRules: Rule = (graph, ctx) => {
     });
   }
 
+  diagnostics.push(...bypassRules(graph));
+
   return diagnostics;
 };
+
+/**
+ * A cable drawn straight into an app, past the machine it runs on.
+ *
+ * §2.3 says a computer is an internal patchbay: a signal reaches an app by
+ * arriving at one of the machine's jacks and being selected there. So
+ * `ハンドマイク.out → join.mic_in` describes a cable that does not exist, and
+ * the setup it stands for is one where the mic is plugged into something.
+ *
+ * This became sayable only once the legitimate bypass had a name of its own.
+ * OBS taking the Meet window on the same PC touches no jack either, and while
+ * both were plain cables the mistake and the correct thing were the same
+ * document (§12.4.1, §11.8).
+ */
+function bypassRules(graph: BuiltGraph): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+
+  for (const edge of graph.edges) {
+    if (edge.kind !== "cable" || !edge.linkId) continue;
+    const from = endpointOf(graph, edge.from);
+    const to = endpointOf(graph, edge.to);
+    if (!from || !to) continue;
+
+    // Whichever end is an app that named a machine. A join whose PC nobody
+    // wrote down is skipped: there is no machine to bypass, and §9.3 says a
+    // document that never mentioned it is finished.
+    const app = from.node.hostNodeId ? from : to.node.hostNodeId ? to : null;
+    if (!app) continue;
+    const other = app === from ? to : from;
+    // Two apps on one machine is the capture case, and it is already its own
+    // edge kind — but two apps on *different* machines is still a cable that
+    // never reaches either one.
+    if (other.node.hostNodeId === app.node.hostNodeId) continue;
+
+    const host = graph.nodes.get(app.node.hostNodeId ?? "");
+    diagnostics.push({
+      ruleId: "cable-bypasses-host",
+      severity: "warn",
+      message: `${nodeLabel(other)} が ${nodeLabel(app)} へ直接結線されています。アプリが受け取れるのは${
+        host ? ` ${nodeLabel(host)} ` : "動かしている PC "
+      }の端子に届いた信号だけなので、ケーブルの行き先をその PC にして、アプリ側は割り当てで選んでください。`,
+      nodeIds: [other.id, app.id],
+      linkIds: [edge.linkId],
+      fixes: [{ kind: "remove-link", linkId: edge.linkId }],
+    });
+  }
+
+  return diagnostics;
+}
+
+function endpointOf(graph: BuiltGraph, vertexId: string): ResolvedNode | null {
+  const vertex = graph.vertices.get(vertexId);
+  return vertex?.type === "port" ? (graph.nodes.get(vertex.nodeId) ?? null) : null;
+}

@@ -40,6 +40,8 @@ export type SetupOperation =
   | { kind: "rename-source"; nodeId: string; portKey: string; label: string }
   | { kind: "add-link"; link: SetupLink }
   | { kind: "remove-link"; linkId: string }
+  | { kind: "add-assignment"; nodeId: string; port: string; hostPort: string }
+  | { kind: "remove-assignment"; nodeId: string; port: string }
   | { kind: "toggle-route"; nodeId: string; inPort: string; bus: string }
   | { kind: "set-notes"; notes: string };
 
@@ -96,14 +98,22 @@ export function applyOperation(doc: SetupDoc, op: SetupOperation): SetupDoc {
       const touches = (ref: PortRef) => ref[0] === op.nodeId && removing.has(ref[1]);
       return {
         ...doc,
-        nodes: doc.nodes.map((entry) =>
-          entry.id === op.nodeId
-            ? clean({
-                ...entry,
-                ports: (entry.ports ?? []).filter((port) => !removing.has(port.key)),
-              })
-            : entry,
-        ),
+        nodes: doc.nodes.map((entry) => {
+          if (entry.id === op.nodeId) {
+            return clean({
+              ...entry,
+              ports: (entry.ports ?? []).filter((port) => !removing.has(port.key)),
+              assignments: entry.assignments?.filter((a) => !removing.has(a.port)),
+            });
+          }
+          if (entry.hostNodeId === op.nodeId) {
+            return clean({
+              ...entry,
+              assignments: entry.assignments?.filter((a) => !removing.has(a.hostPort)),
+            });
+          }
+          return entry;
+        }),
         // A deleted source takes its cables and its matrix row with it, the
         // cascade `remove-node` already performs. Leaving either behind would
         // turn into `unknown-reference` noise about a jack nobody can see.
@@ -142,6 +152,34 @@ export function applyOperation(doc: SetupDoc, op: SetupOperation): SetupDoc {
 
     case "remove-link":
       return { ...doc, links: doc.links.filter((link) => link.id !== op.linkId) };
+
+    case "add-assignment": {
+      const node = doc.nodes.find((entry) => entry.id === op.nodeId);
+      if (!node) return doc;
+      const others = (node.assignments ?? []).filter((a) => a.port !== op.port);
+      return {
+        ...doc,
+        nodes: doc.nodes.map((entry) =>
+          entry.id === op.nodeId
+            ? { ...entry, assignments: [...others, { port: op.port, hostPort: op.hostPort }] }
+            : entry,
+        ),
+      };
+    }
+
+    case "remove-assignment": {
+      return {
+        ...doc,
+        nodes: doc.nodes.map((entry) =>
+          entry.id === op.nodeId && entry.assignments
+            ? clean({
+                ...entry,
+                assignments: entry.assignments.filter((a) => a.port !== op.port),
+              })
+            : entry,
+        ),
+      };
+    }
 
     case "toggle-route": {
       const exists = doc.routing.some(
@@ -282,5 +320,6 @@ function clean(node: SetupNode): SetupNode {
   if (node.isolatedPorts?.length) result.isolatedPorts = node.isolatedPorts;
   if (node.ports?.length) result.ports = node.ports;
   if (node.hostNodeId) result.hostNodeId = node.hostNodeId;
+  if (node.assignments?.length) result.assignments = node.assignments;
   return result;
 }

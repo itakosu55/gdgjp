@@ -57,6 +57,10 @@ const EDGE_DASH: Record<string, string | undefined> = {
   cable: undefined,
   internal: "2 3",
   host: "1 3",
+  // Neither a cable nor a jack: one app taking another's window on the machine
+  // they share. Drawn nearer the assignment it resembles than the cable it is
+  // written like.
+  capture: "1 2 4 2",
   space: "6 4",
 };
 

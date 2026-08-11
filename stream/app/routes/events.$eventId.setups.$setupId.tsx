@@ -274,11 +274,11 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
   /**
    * What dragging one jack onto another means, or `null` if it means nothing.
    *
-   * The two relationships `links` carries look identical on the canvas and are
-   * told apart by geometry alone: across the faces is a cable, and on the same
-   * face is an app picking a device on the computer under it. That is the same
-   * rule `orientHostAssignment` applies, which is why neither the drag nor the
-   * assignment form ever asks which way round the link goes.
+   * The two relationships look identical on the canvas and are told apart by
+   * geometry alone: across the faces is a cable, and on the same face is an app
+   * picking a device on the computer under it. That is the same rule
+   * `buildAssignmentEdges` applies to derive the direction, which is why
+   * neither the drag nor the assignment form ever asks which way round it goes.
    */
   const wireFor = (from: PortEnd, to: PortEnd) => {
     if (from.nodeId === to.nodeId) return null;
@@ -293,12 +293,11 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
       return { intent: "add-link", from: out, to: into } as const;
     }
 
-    if (hasLink(doc, a, b) || hasLink(doc, b, a)) return null;
     const hostOf = (nodeId: string) => doc.nodes.find((node) => node.id === nodeId)?.hostNodeId;
-    if (hostOf(from.nodeId) === to.nodeId) {
+    if (hostOf(from.nodeId) === to.nodeId && !hasAssignment(doc, a)) {
       return { intent: "add-assignment", app: a, host: b } as const;
     }
-    if (hostOf(to.nodeId) === from.nodeId) {
+    if (hostOf(to.nodeId) === from.nodeId && !hasAssignment(doc, b)) {
       return { intent: "add-assignment", app: b, host: a } as const;
     }
     return null;
@@ -597,6 +596,12 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
       </div>
     </div>
   );
+}
+
+/** An app port already selects a device — one input reads from one of them. */
+function hasAssignment(doc: SetupDoc, app: PortRef): boolean {
+  const node = doc.nodes.find((entry) => entry.id === app[0]);
+  return (node?.assignments ?? []).some((assignment) => assignment.port === app[1]);
 }
 
 function hasLink(doc: SetupDoc, from: PortRef, to: PortRef): boolean {

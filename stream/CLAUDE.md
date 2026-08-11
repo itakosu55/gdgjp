@@ -222,27 +222,45 @@ per-model-with-quantity is a prerequisite for the future double-booking rule; do
 `setups` means *alternatives that are mutually exclusive in time* ("本番" / "リハ"). Simultaneous
 tracks are a different axis — see design doc §8 before adding one.
 
-## Two things `links` means
+## Three relationships, and only one of them is a link
 
-A cable runs output → input, physically exists, and someone can unplug it. A link between an app
-and the computer it runs on is a device selection — which input OBS captures from, which output
-it monitors on — and runs out→out or in→in. `buildLinkEdges` orients both; `isHostAssignment`
-tells them apart from the document alone, and `orientHostAssignment` derives the direction from
-the two port directions.
+**A cable** runs output → input, physically exists, and someone can unplug it. `links` now means
+this and nothing else, so `buildLinkEdges` has no exceptions in it.
 
-The editor keeps them in separate tables with separate forms, and the cable form offers only
-outputs as a source and only inputs as a destination. It used to be one form whose hint had to
-say "out→out is correct between an app and its host PC" — a caveat like that is the sign of two
-relationships wearing one name. The assignment form never asks which way round the link goes.
+**A device selection** is `SetupNode.assignments: { port, hostPort }[]` — which input OBS captures
+from, which output it monitors on. It is a fact about the app, so it lives on the app.
+**The direction is derived and never written down**: from inside a computer a physical output is
+a *sink* and a physical input is a *source*, so two jacks that share a direction already say which
+end is upstream, and `buildAssignmentEdges` reads that off. While this lived in `links` the
+document had to carry the orientation, which meant every writer of one — a person today, the AI
+phase later — had to know that this single relationship runs out→out. `isHostAssignment` and
+`orientHostAssignment` are gone with it.
 
-Because `orientHostAssignment` only ever produces same-face links, `routeNested` can assume both
-ends sit on the same side of the machine and route straight up the gutter. Anything else between
-an app and its host is not a device selection, and falls back to `routeSibling`.
+**A capture** is one app taking another's window on the machine they share (OBS and the Meet
+tab). It touches no jack, so it legitimately bypasses §2.3's patchbay. It stays written as a
+link, because it really is out → in, but `buildLinkEdges` gives it `kind: "capture"` when both
+ends are software with the same `hostNodeId`. Nothing new is declared for it: two apps on one
+host is already in the document, and asking for it again would be a second place to get it wrong.
 
-The long-term fix is to move assignments out of `links` and onto the node
-(`assignments: { port, hostPort }[]`), so `links` means only cables and the AI phase never has to
-be taught the out→out rule. That is a schema change, so it should ride along the next one rather
-than happen alone.
+That third name is what closed §11.8's hole. `cable-bypasses-host` (warn) reports a `cable` with
+exactly one end on a hosted app — `ハンドマイク.out → join.mic_in`, a cable that does not exist —
+and it could not be written while the legitimate bypass and the mistake were the same document.
+A join with no `hostNodeId` is skipped: there is no machine to bypass, and §9.3 says a meeting
+nobody wrote down is a finished document. Two apps on *different* machines are still reported.
+
+An out→out link is now plainly `bad-link-direction`, which is right — it is a selection somebody
+wrote the old way, and the diagnostic carries a remove fix. There is no document migration: the
+app has never been deployed remotely, so fixtures, seeds and local dev are the only documents
+that exist. **Add `assignments` to `clean()` in `mutations.ts`** — same whitelist trap as
+`isolatedPorts` and `ports`; a deleted source drops its selection the way it drops its cables.
+
+The editor keeps cables and selections in separate tables with separate forms, and the cable form
+offers only outputs as a source and only inputs as a destination. It used to be one form whose
+hint had to say "out→out is correct between an app and its host PC" — a caveat like that is the
+sign of two relationships wearing one name. Because a derived orientation only ever produces
+same-face edges, `routeNested` can assume both ends sit on the same side of the machine and route
+straight up the gutter. An assignment carries no `linkId`, so the diagram gives it no
+`data-link-id` and tests find one by its jack.
 
 ## Routes
 
@@ -328,10 +346,12 @@ Consequences worth knowing:
   waits for the POST; anything whose effect has to outlive the current page needs it.
 
 **The picture is the wiring surface.** Clicking a box or a place frame drives `?sel=`; selecting
-anywhere scrolls the canvas to the box. Dragging jack to jack draws a link, and the two things
-`links` means are told apart by geometry alone — across the faces is a cable, along one face is
-an app picking a device on the computer under it — which is the same rule `orientHostAssignment`
-applies. The diagram stays geometric: `canWire` / `onWire` come from the route, which is the only
+anywhere scrolls the canvas to the box. Dragging jack to jack wires two things, told apart by
+geometry alone — across the faces is a cable, along one face is an app picking a device on the
+computer under it — which is the same rule `buildAssignmentEdges` uses to derive the direction,
+so neither the drag nor the form ever asks which way round it goes. A second drag onto a jack
+that already selects a device replaces the selection, because one app input reads from one
+device. The diagram stays geometric: `canWire` / `onWire` come from the route, which is the only
 place that knows about `hostNodeId`. Valid targets light up during a drag, Escape cancels, and
 hit testing is arithmetic against the port anchors rather than `pointerover` on a 3px circle.
 

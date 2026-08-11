@@ -1422,11 +1422,12 @@ function escapeLane(y: number, box: PlacedBox): number {
 /**
  * An app wired to a jack of the machine it is drawn inside.
  *
- * `orientHostAssignment` only ever produces same-face links (out→out when an app
- * plays into a jack, in→in when it captures from one), so the connector runs up
- * the gutter between the app's border and the machine's — the only strip of the
- * machine nothing else is drawn in, including its other apps. Anything else
- * between the two is not a device selection, and falls back to the sibling
+ * A device selection only ever joins two jacks of the same face (out→out when
+ * an app plays into one, in→in when it captures from one), so the connector
+ * runs up the gutter between the app's border and the machine's — the only
+ * strip of the machine nothing else is drawn in, including its other apps.
+ * Anything else between the two is not a device selection — a capture between
+ * two apps on this machine is the other case — and falls back to the sibling
  * route.
  */
 function routeNested(a: Anchor, b: Anchor, inner: PlacedBox, from: PlacedBox, to: PlacedBox) {

@@ -65,6 +65,13 @@ export const nodePortSchema = z.object({
   sourceId: z.string().min(1).max(64).optional(),
 });
 
+export const assignmentSchema = z.object({
+  /** A port key on this node (the app). */
+  port: z.string().min(1).max(64),
+  /** A port key on `hostNodeId` (the machine). */
+  hostPort: z.string().min(1).max(64),
+});
+
 export const setupNodeSchema = z
   .object({
     id,
@@ -114,6 +121,7 @@ export const setupNodeSchema = z
     ports: z.array(nodePortSchema).optional(),
     /** Set on software nodes (OBS, Meet) to the computer node they run on. */
     hostNodeId: id.optional(),
+    assignments: z.array(assignmentSchema).optional(),
   })
   .refine((node) => Boolean(node.deviceId) !== Boolean(node.modelId), {
     message: "deviceId か modelId のいずれか一方が必要です",

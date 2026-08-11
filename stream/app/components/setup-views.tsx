@@ -4,7 +4,6 @@ import { SetupForm } from "~/components/setup-form";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Textarea } from "~/components/ui/textarea";
-import { isHostAssignment } from "~/lib/av/graph";
 import { SPACE_KIND_LABELS, entries } from "~/lib/av/labels";
 import type { SetupDoc, SetupLink } from "~/lib/av/schema";
 import type { DeviceModel } from "~/lib/av/types";
@@ -33,8 +32,18 @@ export function CablesView({
   doc: SetupDoc;
   nodeInfo: NodeInfo[];
 }) {
-  const assignments = doc.links.filter((link) => isHostAssignment(doc, link));
-  const cables = doc.links.filter((link) => !isHostAssignment(doc, link));
+  // Every link is a cable now. A device selection lives on the node that made
+  // it, and the two tables no longer have to be sieved apart by a predicate.
+  const cables = doc.links;
+  const assignments = doc.nodes.flatMap((node) => {
+    const hostNodeId = node.hostNodeId;
+    if (!hostNodeId) return [];
+    return (node.assignments ?? []).map((assignment) => ({
+      nodeId: node.id,
+      hostNodeId,
+      ...assignment,
+    }));
+  });
 
   const portOptions = (filter: (port: DeviceModel["ports"][number]) => boolean) =>
     nodeInfo.flatMap((info) =>
@@ -118,16 +127,7 @@ export function CablesView({
         {assignments.length === 0 ? (
           <EmptyState>割り当てがまだありません。</EmptyState>
         ) : (
-          <LinkTable
-            links={assignments}
-            headings={["アプリ側", "PC 側"]}
-            cells={(link) => {
-              const appFirst = doc.nodes.find((node) => node.id === link.from[0])?.hostNodeId;
-              const app = appFirst ? link.from : link.to;
-              const host = appFirst ? link.to : link.from;
-              return [describePort(nodeInfo, app), describePort(nodeInfo, host)];
-            }}
-          />
+          <AssignmentTable assignments={assignments} nodeInfo={nodeInfo} />
         )}
         {appPorts.length > 0 ? (
           <SetupForm className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border p-3">
@@ -166,6 +166,67 @@ export function CablesView({
           </SetupForm>
         ) : null}
       </section>
+    </div>
+  );
+}
+
+type AssignmentRow = {
+  nodeId: string;
+  hostNodeId: string;
+  port: string;
+  hostPort: string;
+};
+
+/**
+ * The device selections, one row each.
+ *
+ * No id column and no direction: an assignment is identified by the app port it
+ * is made on — one app input reads from one device — and which way the signal
+ * runs is derived from the two jacks rather than stored (§12.4.1).
+ */
+function AssignmentTable({
+  assignments,
+  nodeInfo,
+}: {
+  assignments: AssignmentRow[];
+  nodeInfo: NodeInfo[];
+}) {
+  return (
+    <div className="overflow-x-auto rounded-lg border">
+      <table className="w-full text-sm">
+        <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+          <tr>
+            <th className="px-3 py-2">アプリ側</th>
+            <th className="px-3 py-2">PC 側</th>
+            <th className="px-3 py-2" />
+          </tr>
+        </thead>
+        <tbody>
+          {assignments.map((assignment) => (
+            <tr key={`${assignment.nodeId}::${assignment.port}`} className="border-t">
+              <td className="px-3 py-2">
+                {describePort(nodeInfo, [assignment.nodeId, assignment.port])}
+              </td>
+              <td className="px-3 py-2">
+                {describePort(nodeInfo, [assignment.hostNodeId, assignment.hostPort])}
+              </td>
+              <td className="px-3 py-2 text-right">
+                <SetupForm>
+                  <input type="hidden" name="intent" value="remove-assignment" />
+                  <input type="hidden" name="nodeId" value={assignment.nodeId} />
+                  <input type="hidden" name="port" value={assignment.port} />
+                  <button
+                    type="submit"
+                    className="text-xs text-muted-foreground hover:text-destructive"
+                  >
+                    削除
+                  </button>
+                </SetupForm>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

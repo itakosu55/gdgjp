@@ -1,6 +1,5 @@
 import type { Fix } from "~/lib/av/diagnostics";
 import type { CatalogLookup } from "~/lib/av/graph";
-import { orientHostAssignment } from "~/lib/av/graph";
 import { applyFix, applyOperation, defaultRoutesFor, sourceRoutes } from "~/lib/av/mutations";
 import { initialPorts, newSource, resolvePorts } from "~/lib/av/ports";
 import type { PortRef, SetupDoc } from "~/lib/av/schema";
@@ -59,6 +58,7 @@ const OPTIMISTIC = new Set([
   "rename-source",
   "add-link",
   "add-assignment",
+  "remove-assignment",
   "remove-link",
   "toggle-route",
   "set-notes",
@@ -258,11 +258,7 @@ export function applyIntent(doc: SetupDoc, form: FormData, catalog: IntentCatalo
         return { kind: "error", error: "ポートが見つかりません。" };
       }
 
-      const oriented = orientHostAssignment(
-        { ref: app, direction: appDirection },
-        { ref: host, direction: hostDirection },
-      );
-      if (!oriented) {
+      if (appDirection !== hostDirection) {
         return {
           kind: "error",
           error:
@@ -271,9 +267,23 @@ export function applyIntent(doc: SetupDoc, form: FormData, catalog: IntentCatalo
       }
 
       return ok(
-        applyOperation(doc, { kind: "add-link", link: { id: newLinkId(doc), ...oriented } }),
+        applyOperation(doc, {
+          kind: "add-assignment",
+          nodeId: app[0],
+          port: app[1],
+          hostPort: host[1],
+        }),
       );
     }
+
+    case "remove-assignment":
+      return ok(
+        applyOperation(doc, {
+          kind: "remove-assignment",
+          nodeId: text(form.get("nodeId")),
+          port: text(form.get("port")),
+        }),
+      );
 
     case "remove-link":
       return ok(applyOperation(doc, { kind: "remove-link", linkId: text(form.get("linkId")) }));

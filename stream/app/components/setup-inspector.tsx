@@ -6,7 +6,6 @@ import { SetupForm } from "~/components/setup-form";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Textarea } from "~/components/ui/textarea";
-import { isHostAssignment } from "~/lib/av/graph";
 import {
   COUPLING_LABELS,
   SPACE_KIND_LABELS,
@@ -73,6 +72,8 @@ export function SetupInspector({
   const links = doc.links.filter(
     (link) => link.from[0] === info.node.id || link.to[0] === info.node.id,
   );
+  const hostNodeId = info.node.hostNodeId;
+  const assignments = info.node.assignments ?? [];
 
   return (
     <div className="flex flex-col gap-5">
@@ -192,15 +193,27 @@ export function SetupInspector({
             結線表へ
           </Link>
         </SectionHead>
-        {links.length === 0 ? (
+        {links.length === 0 && assignments.length === 0 ? (
           <p className="text-xs text-muted-foreground">まだ結線されていません。</p>
         ) : (
           <ul className="flex flex-col gap-1">
             {links.map((link) => (
               <li key={link.id}>
-                <Wire doc={doc} nodeInfo={nodeInfo} link={link} info={info} />
+                <Wire nodeInfo={nodeInfo} link={link} info={info} />
               </li>
             ))}
+            {hostNodeId
+              ? assignments.map((assignment) => (
+                  <li key={`assign:${assignment.port}`}>
+                    <Assignment
+                      nodeInfo={nodeInfo}
+                      info={info}
+                      hostNodeId={hostNodeId}
+                      assignment={assignment}
+                    />
+                  </li>
+                ))
+              : null}
           </ul>
         )}
       </section>
@@ -377,19 +390,16 @@ function Sources({ info }: { info: NodeInfo }) {
 }
 
 /**
- * One link, read from the selected node's point of view.
+ * One cable, read from the selected node's point of view.
  *
- * A cable and a device selection wear different badges because they are
- * different relationships: one physically exists and someone can unplug it, the
- * other is a dropdown in OBS.
+ * Every link is a cable now — a device selection is `Assignment` below — so the
+ * badge says only which way the signal runs.
  */
 function Wire({
-  doc,
   nodeInfo,
   link,
   info,
 }: {
-  doc: SetupDoc;
   nodeInfo: NodeInfo[];
   link: SetupLink;
   info: NodeInfo;
@@ -397,11 +407,10 @@ function Wire({
   const outgoing = link.from[0] === info.node.id;
   const own = outgoing ? link.from : link.to;
   const peer = outgoing ? link.to : link.from;
-  const assignment = isHostAssignment(doc, link);
   return (
     <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5 text-xs">
       <span className="shrink-0 rounded border border-border px-1 py-px text-[10px] text-muted-foreground">
-        {assignment ? "割当" : outgoing ? "出力" : "入力"}
+        {outgoing ? "出力" : "入力"}
       </span>
       <span className="shrink-0 text-muted-foreground">{portLabel(info, own[1])}</span>
       <span className="shrink-0 text-muted-foreground">{outgoing ? "→" : "←"}</span>
@@ -409,6 +418,44 @@ function Wire({
       <SetupForm className="ml-auto shrink-0">
         <input type="hidden" name="intent" value="remove-link" />
         <input type="hidden" name="linkId" value={link.id} />
+        <button type="submit" className="text-muted-foreground hover:text-destructive">
+          削除
+        </button>
+      </SetupForm>
+    </div>
+  );
+}
+
+/**
+ * One device selection, which this node made on the machine it runs on.
+ *
+ * No arrow: the direction is derived from the two jacks and is not the app's to
+ * choose, so drawing one would invite somebody to try to reverse it.
+ */
+function Assignment({
+  nodeInfo,
+  info,
+  hostNodeId,
+  assignment,
+}: {
+  nodeInfo: NodeInfo[];
+  info: NodeInfo;
+  hostNodeId: string;
+  assignment: { port: string; hostPort: string };
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5 text-xs">
+      <span className="shrink-0 rounded border border-border px-1 py-px text-[10px] text-muted-foreground">
+        割当
+      </span>
+      <span className="shrink-0 text-muted-foreground">{portLabel(info, assignment.port)}</span>
+      <span className="min-w-0 truncate">
+        {describePort(nodeInfo, [hostNodeId, assignment.hostPort])}
+      </span>
+      <SetupForm className="ml-auto shrink-0">
+        <input type="hidden" name="intent" value="remove-assignment" />
+        <input type="hidden" name="nodeId" value={info.node.id} />
+        <input type="hidden" name="port" value={assignment.port} />
         <button type="submit" className="text-muted-foreground hover:text-destructive">
           削除
         </button>
