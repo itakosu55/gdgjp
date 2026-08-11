@@ -1,5 +1,5 @@
 import type { Diagnostic, Severity } from "~/lib/av/diagnostics";
-import { placeKeyOf } from "~/lib/av/places";
+import { inPlaceOrder, placeKeyOf } from "~/lib/av/places";
 import { resolvePorts } from "~/lib/av/ports";
 import type { PortRef, SetupDoc, SetupNode, Space } from "~/lib/av/schema";
 import type { DeviceModel, DeviceModelPort, SpaceKind } from "~/lib/av/types";
@@ -87,24 +87,34 @@ export type Place = {
   key: string;
   label: string;
   kinds: SpaceKind[];
-  /** The spaces the place covers; the first one is what the header selects. */
+  /**
+   * The spaces the place covers, air before sight (`inPlaceOrder`); the first
+   * one is what the header selects and where the label comes from.
+   */
   spaceIds: string[];
 };
 
 export function collectPlaces(doc: SetupDoc): Place[] {
-  const places = new Map<string, Place>();
+  const grouped = new Map<string, Space[]>();
   for (const space of doc.spaces) {
     const key = placeKeyOf(space);
     if (!key) continue;
-    const existing = places.get(key);
-    if (existing) {
-      if (!existing.kinds.includes(space.kind)) existing.kinds.push(space.kind);
-      existing.spaceIds.push(space.id);
-      continue;
-    }
-    places.set(key, { key, label: space.label, kinds: [space.kind], spaceIds: [space.id] });
+    const found = grouped.get(key);
+    if (found) found.push(space);
+    else grouped.set(key, [space]);
   }
-  return [...places.values()];
+
+  // Rooms keep document order; the spaces inside one do not, so which half of a
+  // hall was added first decides neither its caption nor what the header picks.
+  return [...grouped].map(([key, spaces]) => {
+    const ordered = inPlaceOrder(spaces);
+    return {
+      key,
+      label: ordered[0]?.label ?? key,
+      kinds: [...new Set(ordered.map((space) => space.kind))],
+      spaceIds: ordered.map((space) => space.id),
+    };
+  });
 }
 
 /** Which place a node stands in, or `null` when it has no room. */

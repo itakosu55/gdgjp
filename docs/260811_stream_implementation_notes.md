@@ -462,6 +462,19 @@ inside of each lane.
 
 `computeFrames` then draws the border. A place holding nothing but its own air gets no frame.
 
+**Inside one place the spaces are ordered, and the order is not the document's.** `inPlaceOrder`
+(`av/places.ts`) sorts them by `SPACE_KINDS` — air, then sight. Which half of a hall somebody
+happened to create first is not something a reader can know, so it must not be what decides
+anything they see, and before this it decided three things: which half sat on top (both halves
+share a lane *and* a column and neither has a forward edge, so the median heuristic had no
+opinion and the rows fell out of the insertion order), which half's label captioned the frame,
+and which space the tree's header edited. The caption one was the visible wart: renaming a hall
+moved its caption only when you happened to rename the half that was declared first. Both
+`collectPlaces` — `av/layout.ts` for the frame, `setup-view.ts` for the tree — take the caption
+and the header's space from `inPlaceOrder`'s first entry, and `byLane` breaks its tie with the
+same rank. **Places themselves stay in document order**: a lane is a room, and the order the
+rooms were written in is the author's, not an accident.
+
 Bands come from `computeBands`: a run of columns sharing a role, emitted as a tint the component
 captions 入力 / 中間 / 出力 / 空間. Deliberately a tint and **not** a frame — position already
 carries the role, and a role is not a container. The three shapes now say three different things

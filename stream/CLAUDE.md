@@ -253,6 +253,11 @@ component draws the `points` it is handed and owns no geometry.
 - **A space's column comes from its rank floor, never from its inflow.** `rankByRole` floors every
   space one past the outputs, so the two halves of one place share a column whatever stands in
   them. Ranking a room by what feeds it drew a camera-only space at column 0.
+- **The spaces inside one place are ordered by `inPlaceOrder` (`av/places.ts`), never by document
+  order** — air, then sight. Which half somebody added first is not something a reader knows, so it
+  decides neither the rows (`byLane`'s tie-break), nor the frame caption and the space the tree's
+  header edits (both `collectPlaces`, in `av/layout.ts` and `setup-view.ts`). **Places themselves
+  stay in document order**: a lane is a room, and the order rooms were written in is the author's.
 
 ## E2E (no real OAuth)
 

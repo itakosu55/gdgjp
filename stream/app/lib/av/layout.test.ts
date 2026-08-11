@@ -285,7 +285,7 @@ describe("layoutGraph", () => {
     // inflow, the acoustic half of a hall landed past the speakers while the
     // visual half — nothing emits into a room with only a camera in it — stayed
     // at column 0, so one room drew at both ends of the picture.
-    describe("the room's own column", () => {
+    describe("a place's two spaces", () => {
       const hall = {
         spaces: [
           { id: "sp_air", kind: "acoustic", label: "ホール", venueKey: "hall" },
@@ -328,6 +328,27 @@ describe("layoutGraph", () => {
         expect(outputs.length).toBeGreaterThan(0);
         for (const room of rooms) {
           for (const output of outputs) expect(room.column).toBeGreaterThan(output.column);
+        }
+      });
+
+      // Sharing a column is not enough: neither half has a forward edge, so
+      // their rows came from the document too, and the pair swapped top for
+      // bottom depending on which was typed first.
+      it("draws the air above the sight whichever half came first", () => {
+        for (const spaces of [hall.spaces, [...hall.spaces].reverse()]) {
+          const layout = layoutOf({ ...hall, spaces });
+          const air = nodeOf(layout, "space:sp_air");
+          const sight = nodeOf(layout, "space:sp_sight");
+          expect(air && sight && air.y < sight.y).toBe(true);
+        }
+      });
+
+      // The caption used to come from whichever half was declared first, so
+      // renaming a hall moved it only half the time.
+      it("captions the frame from the acoustic half whichever half came first", () => {
+        for (const spaces of [hall.spaces, [...hall.spaces].reverse()]) {
+          const layout = layoutOf({ ...hall, spaces });
+          expect(layout.frames.map((frame) => frame.label)).toEqual(["ホール"]);
         }
       });
     });

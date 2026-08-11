@@ -1,6 +1,7 @@
 import type { BuiltGraph, EdgeKind, GraphEdge, ResolvedNode, VertexId } from "./graph";
 import { isPortWired, nodeLabel } from "./graph";
-import { placeKeyOf } from "./places";
+import { inPlaceOrder, placeKeyOf, spaceRank } from "./places";
+import type { Space } from "./schema";
 import type { DeviceCategory, Medium, PortDirection, SpaceKind } from "./types";
 
 /**
@@ -150,7 +151,7 @@ export type LayoutNode = {
 export type LayoutFrame = {
   key: string;
   label: string;
-  /** Every space kind the place covers, in document order. */
+  /** Every space kind the place covers, air before sight (`inPlaceOrder`). */
   spaceKinds: SpaceKind[];
   x: number;
   y: number;
@@ -339,7 +340,21 @@ export function layoutGraph(graph: BuiltGraph, options: LayoutOptions = {}): Lay
 
   const { items, segments } = insertDummies(keys, forward, column);
   const lanes = laneOfEach(boxes, items, forward, places);
-  const order = orderRows(items, segments, lanes, laneOrder(lanes, places), options.order);
+  // Two spaces of one room share a lane *and* a column, so nothing else in the
+  // pipeline has an opinion about which of them is drawn first.
+  const withinLane = new Map(
+    [...boxes.values()].flatMap((box) =>
+      box.spaceKind === null ? [] : [[box.key, spaceRank(box.spaceKind)] as const],
+    ),
+  );
+  const order = orderRows(
+    items,
+    segments,
+    lanes,
+    laneOrder(lanes, places),
+    withinLane,
+    options.order,
+  );
   const y = assignRows(order, boxes, segments, lanes, laneOrder(lanes, places), places);
 
   return buildLayout(places, boxes, edges, forward, column, order, y);
@@ -356,16 +371,26 @@ export function layoutGraph(graph: BuiltGraph, options: LayoutOptions = {}): Lay
 type Place = { key: string; label: string; spaceKinds: SpaceKind[]; rank: number };
 
 function collectPlaces(graph: BuiltGraph): Map<string, Place> {
-  const places = new Map<string, Place>();
+  const grouped = new Map<string, Space[]>();
   for (const space of graph.spaces.values()) {
     const key = placeKeyOf(space);
     if (!key) continue;
-    const existing = places.get(key);
-    if (existing) {
-      if (!existing.spaceKinds.includes(space.kind)) existing.spaceKinds.push(space.kind);
-      continue;
-    }
-    places.set(key, { key, label: space.label, spaceKinds: [space.kind], rank: places.size });
+    const found = grouped.get(key);
+    if (found) found.push(space);
+    else grouped.set(key, [space]);
+  }
+
+  // Places keep document order — a lane is a room, and the order rooms were
+  // written in is the author's. Only the spaces *inside* one are canonical.
+  const places = new Map<string, Place>();
+  for (const [key, spaces] of grouped) {
+    const ordered = inPlaceOrder(spaces);
+    places.set(key, {
+      key,
+      label: ordered[0]?.label ?? key,
+      spaceKinds: [...new Set(ordered.map((space) => space.kind))],
+      rank: places.size,
+    });
   }
   return places;
 }
@@ -887,6 +912,7 @@ function orderRows(
   segments: readonly Segment[],
   lanes: Map<string, string>,
   order: readonly string[],
+  withinLane: Map<string, number>,
   seed?: readonly string[],
 ): string[][] {
   const rank = new Map<string, number>();
@@ -927,7 +953,7 @@ function orderRows(
   }
 
   const rankOfLane = new Map(order.map((lane, index) => [lane, index]));
-  return columns.map((column) => byLane(column, lanes, rankOfLane));
+  return columns.map((column) => byLane(column, lanes, rankOfLane, withinLane));
 }
 
 /**
@@ -939,16 +965,24 @@ function orderRows(
  * it buys is that the median heuristic's work survives: without it a column
  * would be reshuffled at the very end and every straightened edge would bend
  * again.
+ *
+ * `withinLane` then settles the one tie the median heuristic cannot: a room's
+ * two spaces share a lane and a column and neither has a forward edge, so
+ * without it their rows came from the order the document declared them in, and
+ * one hall's air sat above its sight or below it depending on which half was
+ * typed first. Everything else scores 0 and keeps the order the sweeps found.
  */
 function byLane(
   column: readonly string[],
   lanes: Map<string, string>,
   rankOfLane: Map<string, number>,
+  withinLane: Map<string, number>,
 ): string[] {
   return [...column].sort(
     (a, b) =>
       (rankOfLane.get(lanes.get(a) ?? NO_PLACE) ?? 0) -
-      (rankOfLane.get(lanes.get(b) ?? NO_PLACE) ?? 0),
+        (rankOfLane.get(lanes.get(b) ?? NO_PLACE) ?? 0) ||
+      (withinLane.get(a) ?? 0) - (withinLane.get(b) ?? 0),
   );
 }
 
