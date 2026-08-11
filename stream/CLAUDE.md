@@ -250,6 +250,9 @@ component draws the `points` it is handed and owns no geometry.
   frame's caption strip is clickable.
 - **Ranking never follows an edge out of a space.** A room is where signal leaves the cables, so it
   cannot chain one device to the next; that is what keeps two identical devices in one column.
+- **A space's column comes from its rank floor, never from its inflow.** `rankByRole` floors every
+  space one past the outputs, so the two halves of one place share a column whatever stands in
+  them. Ranking a room by what feeds it drew a camera-only space at column 0.
 
 ## E2E (no real OAuth)
 

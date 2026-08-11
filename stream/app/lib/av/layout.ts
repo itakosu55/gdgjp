@@ -682,8 +682,12 @@ function splitByDirection(
  * The first pass finds the natural depth of the inputs and the middle. The
  * second pins every output one column past the deepest of those, so speakers,
  * recorders and OBS line up on the right however long the chain feeding them
- * is. Rooms carry no floor of their own — a room sits wherever what feeds it
- * puts it, which is to say just past the speakers.
+ * is. Rooms sit one column further still, because a room is not a stage of the
+ * chain but the point where it folds back — so its column has to follow from
+ * what a room *is*, not from which transducers happen to stand in it. Left to
+ * its inflow a hall with a speaker lands past the outputs while a camera-only
+ * room, having nothing emitting into it, stays at column 0: the two halves of
+ * one place then draw at opposite ends of the picture.
  */
 function rankByRole(
   keys: readonly string[],
@@ -692,7 +696,9 @@ function rankByRole(
 ): Map<string, number> {
   const hasInput = keys.some((key) => boxes.get(key)?.role === "input");
   const floorFor = (key: string, output: number): number | undefined => {
-    const role = boxes.get(key)?.role;
+    const box = boxes.get(key);
+    if (box?.kind === "space") return output + 1;
+    const role = box?.role;
     if (role === "input") return 0;
     if (role === "output") return output;
     if (role === "hub") return hasInput ? 1 : 0;

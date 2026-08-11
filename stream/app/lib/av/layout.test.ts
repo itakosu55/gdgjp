@@ -281,6 +281,57 @@ describe("layoutGraph", () => {
       for (const output of outputs) expect(output.column).toBeGreaterThan(deepest);
     });
 
+    // A room is where the chain folds back, not a stage of it. Ranked by its
+    // inflow, the acoustic half of a hall landed past the speakers while the
+    // visual half — nothing emits into a room with only a camera in it — stayed
+    // at column 0, so one room drew at both ends of the picture.
+    describe("the room's own column", () => {
+      const hall = {
+        spaces: [
+          { id: "sp_air", kind: "acoustic", label: "ホール", venueKey: "hall" },
+          { id: "sp_sight", kind: "visual", label: "ホール (視界)", venueKey: "hall" },
+        ],
+        nodes: [
+          { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_air" },
+          { id: "n_camera", deviceId: "d_camera", spaceId: "sp_sight" },
+          { id: "n_mixer", deviceId: "d_mixer" },
+          { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_air" },
+          { id: "n_pc", deviceId: "d_pc" },
+        ],
+        links: [
+          { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+          { id: "l2", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+          { id: "l3", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+        ],
+        routing: [
+          { nodeId: "n_mixer", inPort: "ch1", bus: "main" },
+          { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
+        ],
+      } satisfies Partial<SetupDoc>;
+
+      it("puts both halves of one place in the same column", () => {
+        const layout = layoutOf(hall);
+        expect(columnOf(layout, "space:sp_sight")).toBe(columnOf(layout, "space:sp_air"));
+      });
+
+      // Which half happened to be added first is not something the reader knows.
+      it("puts them there whichever half the document names first", () => {
+        const layout = layoutOf({ ...hall, spaces: [...hall.spaces].reverse() });
+        expect(columnOf(layout, "space:sp_sight")).toBe(columnOf(layout, "space:sp_air"));
+      });
+
+      it("keeps every room right of every output", () => {
+        const layout = layoutOf(hall);
+        const rooms = layout.nodes.filter((node) => node.spaceKind !== null);
+        const outputs = layout.nodes.filter((node) => node.role === "output");
+        expect(rooms).toHaveLength(2);
+        expect(outputs.length).toBeGreaterThan(0);
+        for (const room of rooms) {
+          for (const output of outputs) expect(room.column).toBeGreaterThan(output.column);
+        }
+      });
+    });
+
     // An app is inside the machine, not another stage of the chain. Ranking it
     // by where the signal reaches put OBS out among the speakers.
     it("sits an app in the same column as the computer it runs on", () => {

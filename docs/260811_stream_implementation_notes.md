@@ -415,8 +415,16 @@ width from the browser.
 `CATEGORY_ROLE` in `layout.ts` sorts each category into `input` / `hub` / `output`, which is what
 gives the diagram its left-to-right bands. Two rules implement it: every edge arriving at an
 input is cut before the loop search runs, and outputs get a rank floor one past the deepest
-non-output. Rooms carry no role — a room lands wherever what feeds it puts it, which is just
-past the speakers, so the rightmost box is usually the room.
+non-output. Rooms carry no role, but they do carry a floor of their own: one past the outputs,
+so the rightmost column is the 空間 band.
+
+The floor is not cosmetic. A room is not a stage of the chain but the point where it folds back,
+so its column has to follow from what a room *is*. Left to its inflow it followed instead from
+which transducers happened to stand in it: a hall with a speaker looked like a sink and landed on
+the right, while a room with only a camera in it had no forward inflow at all — every space→device
+edge is cut as a return path — and stayed at column 0. One hall then drew at both ends of the
+picture, its two halves as far apart as the diagram allows, which is the opposite of what
+`venueKey` is for.
 
 The role constraint is also what makes the layout *fair*: with pure longest path, which edge got
 cut to break a loop depended on the order the search visited nodes, so two identical mics could
