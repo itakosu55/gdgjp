@@ -165,9 +165,8 @@ field it does not know is dropped on the next unrelated edit.
 `mdl_seed_pc` carries `builtin_mic` (in, `from_space`) and `builtin_spk` (out, `to_space`), and
 the separate 内蔵マイク / 内蔵スピーカー models are deleted (migration 0006). That took a
 laptop from four entries — two of them cables that do not physically exist — down to the two
-device selections. `isAecCancellable` got simpler with it: ownership is a fact now, so it checks
-that every port on the path belongs to the join or its host instead of matching a six-node
-shape.
+device selections. `aecCanceller` got simpler with it: ownership is a fact now, so it names the
+unit holding both faces of the room hop instead of matching a six-node shape.
 
 `space-kind-mismatch` is gone with it — a mic in a place that has only a screen now reaches no
 space, which is the same hole as leaving 所在 blank, so `space-unassigned` says it. When that
@@ -551,7 +550,18 @@ save button.
 `lint.test.ts` next to the loop tests they vary, which is what the surrounding tests already do; a
 shared fixture would have been read by exactly one test each.
 
-Still open, and named in §13.7: the correct hybrid rig in `hybridMonitorMix()` still reports one
-`remote-echo-acoustic` critical that no wiring change clears. `reinforced` deliberately does not
-touch it — the flag asserts loop gain below unity in one room, not that echo is inaudible, and echo
-is a defect far below oscillation. That wants its own declaration wired through `isAecCancellable`.
+A unit that is both faces of a room cancels its own echo, so `aecCanceller` returns whichever node
+holds the two jacks the path leaves and re-enters the room by, and the finding drops to warn when
+nothing else got between that unit and the app. The earlier test demanded every jack on the path
+belong to the join or its host, which is only ever the laptop: `speakerphoneMeeting()` — one
+speakerphone in a meeting room, the most ordinary rig there is — reported critical, and no test
+had noticed.
+
+Still open, and named in §13.7: a canceller that owns *neither* face. A room DSP hears through
+mics it does not contain and plays through a PA it does not contain, so no shape of the path
+tells it apart from a plain analog mixer standing in the same two places — which is why
+`hybridMonitorMix()` still reports one `remote-echo-acoustic` critical that no wiring change
+clears, and should. `reinforced` deliberately does not touch it either: the flag asserts loop
+gain below unity in one room, not that echo is inaudible, and echo is a defect far below
+oscillation. Saying it needs a capability on the model, plus a counter-finding for the DSP wired
+to only one leg — a declaration that only ever removes findings is a lint-disable (§13.5).

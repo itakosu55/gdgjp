@@ -320,6 +320,22 @@ describe("remote participant echo", () => {
     expect(echo).toBeDefined();
     expect(echo?.severity).toBe("warn");
   });
+
+  /**
+   * The speakerphone is the laptop case with the faces carried off the machine:
+   * one unit plays into the room and hears the room back, so its own canceller
+   * still holds both ends of the reference. The most ordinary meeting room
+   * there is reported critical for as long as the test demanded that every jack
+   * on the path belong to the app or to the computer it runs on.
+   */
+  it("downgrades the loop a speakerphone's own canceller removes", () => {
+    const found = lint(speakerphoneMeeting(), testContext());
+    const echo = found.find((d) => d.ruleId === "remote-echo-acoustic");
+
+    expect(echo).toBeDefined();
+    expect(echo?.severity).toBe("warn");
+    expect(echo?.nodeIds).toContain("n_phone");
+  });
 });
 
 describe("transport echo", () => {

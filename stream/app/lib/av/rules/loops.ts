@@ -78,12 +78,12 @@ export const loopRules: Rule = (graph) => {
     const acoustic = findPath(graph, outputs, inputs, { medium: "audio" });
     if (!acoustic) continue;
     const nodeIds = pathNodeIds(graph, acoustic);
-    const cancellable = isAecCancellable(graph, resolved, acoustic);
+    const canceller = aecCanceller(graph, resolved, acoustic);
     diagnostics.push({
       ruleId: "remote-echo-acoustic",
-      severity: cancellable ? "warn" : "critical",
-      message: cancellable
-        ? `${describeNode(graph, resolved.id)} は同じ PC の内蔵スピーカーと内蔵マイクだけで回り込んでいます (${describePath(graph, nodeIds)})。会議アプリのエコーキャンセラが消せる範囲なので通常は問題になりませんが、音量を上げると破綻します。`
+      severity: canceller ? "warn" : "critical",
+      message: canceller
+        ? `${describeNode(graph, resolved.id)} の音声は ${describeNode(graph, canceller)} の中だけで回り込んでいます (${describePath(graph, nodeIds)})。鳴らしている機材と拾っている機材が同じなので、その機材のエコーキャンセラが消せる範囲ですが、音量を上げると破綻します。`
         : `${describeNode(graph, resolved.id)} の音声がスピーカーからマイクへ回り込んで送信側に戻っています (${describePath(graph, nodeIds)})。ヘッドセットにするか、該当スピーカーを配信専用 (isolated) にしてください。`,
       nodeIds,
       linkIds: linkIdsOf(acoustic),
@@ -206,44 +206,65 @@ function transportCycle(graph: BuiltGraph, spaceId: string): GraphEdge[] | null 
 }
 
 /**
- * Is this the echo the conferencing app's own canceller removes?
+ * Which unit's own canceller removes this echo, if any.
  *
- * AEC subtracts what the app itself played, out of the device it played it on.
- * That reference exists exactly when the return trip stayed inside this machine
- * — its own built-in speaker, its own built-in mic — and went nowhere else. The
+ * AEC subtracts what was played out of what was picked up, so it needs one unit
+ * holding both ends of that reference: the thing that played into the room has
+ * to be the thing that heard the room back. A laptop's built-in pair is that
+ * shape, and so is a speakerphone — one physical unit is both faces of the room
+ * (§11.3). What the reference cannot survive is another box in between: the
  * moment a mixer or a house PA joins the path the signal has been re-timed and
- * re-mixed, the reference no longer matches, and cancellation fails.
+ * re-mixed, it no longer matches what was played, and cancellation fails.
  *
- * Since a built-in transducer became a *port of the machine* (§11.4), ownership
- * is a fact the path states outright rather than something inferred from its
- * shape. The old version counted six nodes and checked their categories,
- * because a cable drawn straight from a join to a speaker node was expressible
- * and proved nothing about who owned that speaker. There is nothing left to
- * infer: every port on the path either belongs to the app or to the machine it
- * runs on, or the path left the machine.
+ * So the question is who owns the two jacks the path leaves and re-enters the
+ * room by, and whether anything got between them and the app. Since a built-in
+ * transducer became a *port of the machine* (§11.4) that is a fact the path
+ * states outright rather than something inferred from its shape — the earlier
+ * version counted six nodes and checked their categories, because a cable drawn
+ * straight from a join to a speaker node was expressible and proved nothing
+ * about who owned that speaker.
+ *
+ * It stays silent about a canceller that owns neither face, which is what a
+ * room DSP is. Nothing in the catalog can claim that yet (§13.7).
  */
-function isAecCancellable(
+function aecCanceller(
   graph: BuiltGraph,
   join: ResolvedNode,
   path: readonly GraphEdge[],
-): boolean {
+): string | null {
   const host = join.node.hostNodeId;
-  if (!host) return false;
+  if (!host) return null;
+
+  // Into one room and straight back out of the same room.
+  const hops = path.filter((edge) => edge.kind === "space");
+  if (hops.length !== 2) return null;
+  const spaceId = hops[0]?.spaceId;
+  if (!spaceId || hops[1]?.spaceId !== spaceId) return null;
+  if (graph.spaces.get(spaceId)?.kind !== "acoustic") return null;
+
+  const canceller = faceOwner(graph, hops[0]);
+  if (!canceller || canceller !== faceOwner(graph, hops[1])) return null;
 
   for (const edge of path) {
     for (const vertexId of [edge.from, edge.to]) {
       const vertex = graph.vertices.get(vertexId);
       if (vertex?.type !== "port") continue;
-      if (vertex.nodeId !== join.id && vertex.nodeId !== host) return false;
+      if (vertex.nodeId !== join.id && vertex.nodeId !== host && vertex.nodeId !== canceller) {
+        return null;
+      }
     }
   }
 
-  // Into one room and straight back out of the same room.
-  const hops = path.filter((edge) => edge.kind === "space");
-  if (hops.length !== 2) return false;
-  const spaceId = hops[0]?.spaceId;
-  if (!spaceId || hops[1]?.spaceId !== spaceId) return false;
-  return graph.spaces.get(spaceId)?.kind === "acoustic";
+  return canceller;
+}
+
+/** The node holding the jack a room hop leaves the cables by, or arrives at. */
+function faceOwner(graph: BuiltGraph, hop: GraphEdge): string | null {
+  for (const vertexId of [hop.from, hop.to]) {
+    const vertex = graph.vertices.get(vertexId);
+    if (vertex?.type === "port") return vertex.nodeId;
+  }
+  return null;
 }
 
 /** Every distinct space a cycle passes through, in traversal order. */
