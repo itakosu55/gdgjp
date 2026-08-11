@@ -548,6 +548,7 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
                 nodeNames={nodeNames}
                 spaceNames={spaceNames}
                 hrefForNode={hrefFor}
+                hrefForSpace={(id) => hrefFor(`space:${id}`)}
                 onFocus={setHighlight}
               />
             </div>

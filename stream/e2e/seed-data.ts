@@ -107,6 +107,20 @@ function howlingDoc() {
   };
 }
 
+/**
+ * The canonical howl in a hall that says it reinforces. Same topology, so the
+ * only thing under test is that the declaration moves the severity.
+ */
+function reinforcedDoc() {
+  const doc = howlingDoc();
+  return {
+    ...doc,
+    spaces: doc.spaces.map((space) =>
+      space.id === "sp1" ? { ...space, reinforced: true } : space,
+    ),
+  };
+}
+
 /** Meet's received audio returns down the mixer's USB send: a Mix-Minus violation. */
 function mixMinusDoc() {
   return {
@@ -325,6 +339,22 @@ export const SETUPS = [
     eventId: EVENT.id,
     name: "E2E 伝送エコー",
     doc: transportEchoDoc(),
+  },
+  // The same canonical howl, with the hall declaring that it reinforces: the
+  // topology is identical and only the severity moves.
+  {
+    id: "e2e_setup_reinforced",
+    eventId: EVENT.id,
+    name: "E2E 拡声の宣言",
+    doc: reinforcedDoc(),
+  },
+  // Its own copy, because the declaration is made through the inspector here
+  // and a mutating test may not share a document with a read-only one.
+  {
+    id: "e2e_setup_declare",
+    eventId: EVENT.id,
+    name: "E2E 拡声を宣言する",
+    doc: howlingDoc(),
   },
   // The Mix-Minus rig with the offending matrix cell already cleared: no room,
   // no endpoint gear and nothing streaming, so it reports nothing at all.

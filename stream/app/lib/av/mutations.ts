@@ -21,6 +21,11 @@ import type { DeviceModel } from "./types";
 export type SetupOperation =
   | { kind: "add-space"; space: Space }
   | { kind: "remove-space"; spaceId: string }
+  | {
+      kind: "update-space";
+      spaceId: string;
+      patch: Partial<Omit<Space, "id" | "kind">>;
+    }
   | { kind: "add-node"; node: SetupNode; routes: SetupRoute[] }
   // Repointing a node at different gear is not an edit anyone makes, and while
   // `deviceId` was mandatory it was structurally impossible. Now that both
@@ -59,6 +64,14 @@ export function applyOperation(doc: SetupDoc, op: SetupOperation): SetupDoc {
         // describes the situation.
         nodes: doc.nodes.map((node) =>
           node.spaceId === op.spaceId ? omit(node, "spaceId") : node,
+        ),
+      };
+
+    case "update-space":
+      return {
+        ...doc,
+        spaces: doc.spaces.map((space) =>
+          space.id === op.spaceId ? { ...space, ...op.patch } : space,
         ),
       };
 
@@ -300,6 +313,7 @@ export function applyFix(doc: SetupDoc, fix: Fix): SetupDoc {
     // piece of gear, so they are surfaced as guidance rather than applied.
     case "assign-space":
     case "add-device":
+    case "declare-reinforced":
       return doc;
   }
 }

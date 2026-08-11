@@ -127,15 +127,34 @@ function acousticDiagnostic(graph: BuiltGraph, cycle: GraphEdge[]): Diagnostic {
     };
   }
 
+  // A closed loop is howling's necessary condition, not its sufficient one —
+  // that one is loop gain, and §3.5 holds no levels anywhere on purpose, so it
+  // is unknowable here in principle. A room that declares it reinforces is a
+  // room whose operator has taken the gain on themselves, so the finding stops
+  // asserting the outcome and describes the loop instead. Every space on the
+  // cycle has to say so: one undeclared room and the claim is not made.
+  const isReinforced = (id: string) => graph.spaces.get(id)?.reinforced === true;
+  const reinforced = spaceIds.length > 0 && spaceIds.every(isReinforced);
+
   return {
     ruleId: "acoustic-feedback-loop",
-    severity: "critical",
-    message: `ハウリングが発生する閉ループがあります (${describePath(graph, nodeIds)})。スピーカーへ送るバスからこのマイクを外すか、マイクをヘッドセットにしてください。`,
+    severity: reinforced ? "warn" : "critical",
+    message: reinforced
+      ? `音声が閉ループになっています (${describePath(graph, nodeIds)})。この部屋は拡声すると宣言されているため、ハウリングするかどうかはマイクとスピーカーの位置とゲイン次第です。音量を上げると破綻します。`
+      : `ハウリングが発生する閉ループがあります (${describePath(graph, nodeIds)})。スピーカーへ送るバスからこのマイクを外すか、マイクをヘッドセットにしてください。`,
     nodeIds,
     linkIds: linkIdsOf(cycle),
     spaceIds,
     cycle,
-    fixes,
+    // Only rooms that have not declared yet. On a demoted finding this is
+    // empty, which is the point: the declaration is not offered to a room that
+    // already made it.
+    fixes: [
+      ...fixes,
+      ...spaceIds
+        .filter((id) => !isReinforced(id))
+        .map((spaceId) => ({ kind: "declare-reinforced" as const, spaceId })),
+    ],
   };
 }
 

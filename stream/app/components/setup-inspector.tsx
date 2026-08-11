@@ -502,6 +502,36 @@ function SpaceInspector({
         </p>
       </div>
 
+      {/*
+       * The one thing about a room the wiring cannot tell us. Acoustic only:
+       * a declaration that the mics come out of the speakers, so the linter
+       * stops asserting that the loop it found will oscillate (§13).
+       */}
+      {space.kind === "acoustic" ? (
+        <SetupForm className="flex flex-col gap-1.5">
+          <input type="hidden" name="intent" value="update-space" />
+          <input type="hidden" name="spaceId" value={space.id} />
+          <input type="hidden" name="reinforcedForm" value="1" />
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              name="reinforced"
+              defaultChecked={space.reinforced === true}
+              className="size-3.5 accent-primary"
+            />
+            <span>この部屋は拡声する</span>
+          </label>
+          <p className="text-xs text-muted-foreground">
+            会場のマイクをスピーカーから出す構成であり、ハウリングは位置とゲインで抑えられているという当日の運用の宣言。
+          </p>
+          <div className="mt-1">
+            <Button type="submit" variant="secondary" size="sm">
+              保存
+            </Button>
+          </div>
+        </SetupForm>
+      ) : null}
+
       {space.kind === "transport" ? (
         <p className="text-xs text-muted-foreground">
           ミーティングを 1 つの空間として置くと、2 つ以上の join

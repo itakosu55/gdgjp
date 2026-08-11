@@ -16,7 +16,8 @@ export type Fix =
   | { kind: "set-coupling"; nodeId: string; coupling: "isolated"; portKey?: string }
   | { kind: "assign-space"; nodeId: string }
   | { kind: "remove-link"; linkId: string }
-  | { kind: "add-device"; category: DeviceCategory; reason: string };
+  | { kind: "add-device"; category: DeviceCategory; reason: string }
+  | { kind: "declare-reinforced"; spaceId: string };
 
 export type Diagnostic = {
   ruleId: string;

@@ -509,3 +509,44 @@ under the diagram, one per edge.
 Still open: identical devices can land in different columns, because which edge gets cut depends
 on DFS order (in the mixed audio/video fixture one handheld mic ranks at column 0 and its twin at
 column 4). Deterministic, but asymmetric.
+
+## 13. Howling is not decided by the cycle
+
+`Space.reinforced` landed as designed. Four things were settled while writing it.
+
+**`update-space` did not exist.** Spaces could only be added and removed; `SpaceInspector` was
+read-only apart from its delete button. The new operation merges a patch with `id` and `kind`
+excluded, and every key in that patch is guarded by `form.has()` in `applyIntent`. That guard is
+load-bearing, not defensive: the merge is `{ ...space, ...patch }`, so a key the form did not send
+would arrive as `undefined` and erase the field — and `label` is `min(1)`, so erasing it produces a
+document that no longer validates. The checkbox keeps the `reinforcedForm` marker pattern, because
+an unchecked box sends nothing and "off" and "not on screen" are otherwise the same request.
+
+**The declaration is not offered to a room that already made it.** `acousticDiagnostic` filters
+`declare-reinforced` down to the spaces on the cycle that have *not* declared. On a demoted finding
+that list is empty; on a two-room cycle with one room declared it names only the other. Emitting it
+unconditionally rendered a dead link under every warn.
+
+**Label editing was left out, and so was the plumbing for it.** The operation accepts any field of
+a space, but `applyIntent` reads only `reinforced` off the form — no `label`, `venueKey` or
+`meetingKey` branch, because no form sends them and an unused branch here is not free. `add-space`
+guards `if (!label)`; an `update-space` branch without that guard would persist `label: ""`, and
+nothing on the write path would catch it — `safeParseSetupDoc` runs for the JSON tab alone and
+`saveSetupDoc` stringifies what it is handed, so the document would fail validation days later in a
+tab nobody connects to the rename.
+
+Renaming is still worth having. It is safe on the model — `placeKeyOf` is `venueKey ?? id` and
+never the label, so a rename cannot regroup rooms or move a finding — but it needs that guard, and
+it needs an answer for `collectPlaces` taking a place's caption from the *first* space sharing a
+`venueKey`: rename the acoustic half of a room and the box may or may not follow. Its own change.
+The form renders for `acoustic` spaces only, so a transport space does not get an empty form with a
+save button.
+
+**Nothing was added to `fixtures.ts`.** The four new cases build their documents inline in
+`lint.test.ts` next to the loop tests they vary, which is what the surrounding tests already do; a
+shared fixture would have been read by exactly one test each.
+
+Still open, and named in §13.7: the correct hybrid rig in `hybridMonitorMix()` still reports one
+`remote-echo-acoustic` critical that no wiring change clears. `reinforced` deliberately does not
+touch it — the flag asserts loop gain below unity in one room, not that echo is inaudible, and echo
+is a defect far below oscillation. That wants its own declaration wired through `isAecCancellable`.

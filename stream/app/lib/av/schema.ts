@@ -38,6 +38,14 @@ export const spaceSchema = z.object({
    * and it is the first thing needed once documents split per track.
    */
   meetingKey: z.string().min(1).max(64).optional(),
+  /**
+   * This room is reinforced — the mics in it come out of the speakers in it,
+   * and whoever runs the day answers for the gain that makes that safe. It is
+   * a declaration about the world, not a setting: nothing in the document can
+   * imply it, which is exactly why a human has to say it. Meaningful on
+   * `acoustic` only; unset reads as "not stated" and changes nothing.
+   */
+  reinforced: z.boolean().optional(),
 });
 
 /**

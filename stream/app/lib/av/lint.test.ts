@@ -122,6 +122,116 @@ describe("acoustic feedback", () => {
     expect(ruleIds(found)).toContain("stream-monitor-loop");
     expect(ruleIds(found)).not.toContain("acoustic-feedback-loop");
   });
+
+  it("demotes to warn when the room is declared as reinforced", () => {
+    const found = lint(
+      doc({
+        spaces: [{ ...HALL, reinforced: true }],
+        nodes,
+        links,
+        routing: [{ nodeId: "n_mixer", inPort: "ch1", bus: "main" }],
+      }),
+      testContext(),
+    );
+
+    const loop = found.find((d) => d.ruleId === "acoustic-feedback-loop");
+    expect(loop).toBeDefined();
+    expect(loop?.severity).toBe("warn");
+    // A demotion is not a suppression: the path is still named and the wiring
+    // fixes are still offered. Only the assertion that it *will* howl is gone.
+    expect(loop?.message).not.toContain("ハウリングが発生する");
+    expect(loop?.fixes?.some((fix) => fix.kind === "disable-route")).toBe(true);
+    // The room already declared, so it is not asked to declare again.
+    expect(loop?.fixes?.some((fix) => fix.kind === "declare-reinforced")).toBe(false);
+  });
+
+  it("offers the declaration on a room that has not made it", () => {
+    const found = lint(
+      doc({
+        spaces: [HALL],
+        nodes,
+        links,
+        routing: [{ nodeId: "n_mixer", inPort: "ch1", bus: "main" }],
+      }),
+      testContext(),
+    );
+
+    const loop = found.find((d) => d.ruleId === "acoustic-feedback-loop");
+    expect(loop?.fixes).toContainEqual({ kind: "declare-reinforced", spaceId: "sp_hall" });
+  });
+
+  it("remains critical if a cycle crosses two rooms and only one is reinforced", () => {
+    const docWithTwoRooms = doc({
+      spaces: [
+        { ...HALL, reinforced: true },
+        { id: "sp_hall2", kind: "acoustic", label: "Sub Hall" },
+      ],
+      nodes: [
+        { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+        { id: "n_mixer", deviceId: "d_mixer" },
+        { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall2" },
+        { id: "n_mic2", deviceId: "d_mic2", spaceId: "sp_hall2" },
+        { id: "n_speaker2", deviceId: "d_speaker2", spaceId: "sp_hall" },
+      ],
+      links: [
+        { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+        { id: "l2", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+        { id: "l3", from: ["n_mic2", "out"], to: ["n_mixer", "ch2"] },
+        { id: "l4", from: ["n_mixer", "aux1_out"], to: ["n_speaker2", "in"] },
+      ],
+      routing: [
+        { nodeId: "n_mixer", inPort: "ch1", bus: "main" },
+        { nodeId: "n_mixer", inPort: "ch2", bus: "aux1" },
+      ],
+    });
+    const found = lint(docWithTwoRooms, testContext());
+
+    const loop = found.find((d) => d.ruleId === "acoustic-feedback-loop");
+    expect(loop).toBeDefined();
+    expect(loop?.severity).toBe("critical");
+    // Only the room that has not declared is asked to.
+    expect(loop?.fixes?.filter((fix) => fix.kind === "declare-reinforced")).toEqual([
+      { kind: "declare-reinforced", spaceId: "sp_hall2" },
+    ]);
+  });
+
+  it("classifies the loop as a stream monitor loop at critical even in a reinforced room", () => {
+    const found = lint(
+      doc({
+        spaces: [{ ...HALL, reinforced: true }],
+        nodes: [
+          { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+          { id: "n_mixer", deviceId: "d_mixer" },
+          { id: "n_pc", deviceId: "d_pc" },
+          {
+            id: "n_obs",
+            deviceId: "d_obs",
+            hostNodeId: "n_pc",
+            ports: OBS_SOURCES,
+            assignments: [
+              { port: "audio_src:1", hostPort: "usb_in" },
+              { port: "monitor_out", hostPort: "headphone_out" },
+            ],
+          },
+          { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+        ],
+        links: [
+          { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+          { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+          { id: "l5", from: ["n_pc", "headphone_out"], to: ["n_speaker", "in"] },
+        ],
+        routing: [
+          { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
+          { nodeId: "n_obs", inPort: "audio_src:1", bus: "monitor" },
+        ],
+      }),
+      testContext(),
+    );
+
+    expect(ruleIds(found)).toContain("stream-monitor-loop");
+    expect(ruleIds(found)).not.toContain("acoustic-feedback-loop");
+    expect(found.find((d) => d.ruleId === "stream-monitor-loop")?.severity).toBe("critical");
+  });
 });
 
 describe("remote participant echo", () => {
@@ -459,6 +569,28 @@ describe("who hears it", () => {
     // Routing the mic to MAIN instead is what howls, so this must never be
     // raised to a severity that pushes someone into doing it.
     expect(found.some((d) => d.severity === "critical")).toBe(false);
+  });
+
+  it("warns about source not reaching room when the space is declared as reinforced", () => {
+    const found = lint(
+      doc({
+        spaces: [{ ...HALL, reinforced: true }],
+        nodes: [
+          ...onStreamOnly.nodes,
+          { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+        ],
+        links: [
+          ...onStreamOnly.links,
+          { id: "l4", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+        ],
+        routing: onStreamOnly.routing,
+      }),
+      testContext(),
+    );
+
+    const finding = found.find((d) => d.ruleId === "source-not-reaching-room");
+    expect(finding?.severity).toBe("warn");
+    expect(finding?.nodeIds).toEqual(["n_mic"]);
   });
 });
 

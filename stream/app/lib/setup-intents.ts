@@ -50,6 +50,7 @@ export type IntentOutcome =
 const OPTIMISTIC = new Set([
   "add-space",
   "remove-space",
+  "update-space",
   "add-node",
   "update-node",
   "remove-node",
@@ -107,6 +108,31 @@ export function applyIntent(doc: SetupDoc, form: FormData, catalog: IntentCatalo
 
     case "remove-space":
       return ok(applyOperation(doc, { kind: "remove-space", spaceId: text(form.get("spaceId")) }));
+
+    // The patch carries only the keys the form actually sent, and every one of
+    // them is guarded by its own presence. `applyOperation` merges it over the
+    // space, so a key that is merely absent would arrive as `undefined` and
+    // erase the field — and nothing downstream would notice: `safeParseSetupDoc`
+    // runs for the JSON tab alone, and `saveSetupDoc` stringifies whatever it is
+    // handed. A key restored from that document would surface as a schema
+    // violation days later, in a tab nobody connects to this edit.
+    //
+    // `reinforcedForm` is the marker, because a checkbox sends nothing when it
+    // is unchecked and "off" has to stay distinguishable from "never on screen".
+    // The operation accepts every field of a space; add one here only with the
+    // same guard, and a required field with `add-space`'s emptiness check too.
+    case "update-space":
+      return ok(
+        applyOperation(doc, {
+          kind: "update-space",
+          spaceId: text(form.get("spaceId")),
+          patch: {
+            ...(form.has("reinforcedForm")
+              ? { reinforced: form.get("reinforced") === "on" ? true : undefined }
+              : {}),
+          },
+        }),
+      );
 
     case "add-node": {
       // One select, two option groups. `d:` is a unit from the ledger, `m:` is

@@ -78,7 +78,8 @@ Three ideas carry the design:
   runs generate → lint → apply fixes → lint again.
 - **Add every new `SetupNode` field to `clean()` in `mutations.ts`.** It rebuilds from a whitelist,
   so a field it does not know is silently dropped on the next unrelated edit. `isolatedPorts`,
-  `ports` and `assignments` each hit this.
+  `ports` and `assignments` each hit this. `Space` has no equivalent — `update-space` merges a
+  patch — so do not grow one.
 - **Port resolution has one implementation**, `resolvePorts` in `av/ports.ts`, read through
   `graph.resolveNode` and `setup-view.buildNodeInfo`. Nothing may grow a second — the editor
   applies every edit twice (optimistically, then on the server), so a rival implementation shows up
@@ -123,9 +124,20 @@ Phantom power is checked one hop only. One loop is reported per space and per co
 categories, so spare mixer channels and origins stay quiet. `transport-echo-loop` searches audio
 only — video loops belong to `visual-feedback-loop`. `unreachable-device` skips both ends of a host
 relationship; an app with no device selection is `software-io-unassigned` instead. Coverage rules
-never rise above warn: a hall mic that is not in the hall speakers is correct wiring, and a critical
-that correct wiring cannot clear breaks the fix-one-and-re-run loop. Sources are still limited to
-`mic` / `camera` categories plus origins, so a USB speakerphone's room-facing jack is not counted.
+never rise above warn: a hall mic that is not in the hall speakers is usually correct wiring, and a
+critical that correct wiring cannot clear breaks the fix-one-and-re-run loop. Sources are still
+limited to `mic` / `camera` categories plus origins, so a USB speakerphone's room-facing jack is not
+counted.
+
+**`Space.reinforced` is a declaration, not a suppression** (§13). A closed acoustic loop is
+howling's necessary condition; the sufficient one is loop gain, which idea 2 above refuses to hold.
+So a room may say it reinforces, and `acoustic-feedback-loop` drops to warn — but only when *every*
+space on the cycle says so, and never for `stream-monitor-loop` or `transport-echo-loop`, which
+placement cannot fix. It has to cut both ways or it rots into a lint-disable: in a reinforced room
+`source-not-reaching-room` rises info → warn, because the reason it was info (the hall mic is
+deliberately kept out of the hall speakers) is the very thing the room just denied. `declare-reinforced`
+is a `Fix` that **`canApplyFix` refuses** — machines may rewire, only people may assert facts about
+the world — so `LintPanel` renders it as a link to the space, not a button.
 
 ## Three relationships, and only one of them is a link
 

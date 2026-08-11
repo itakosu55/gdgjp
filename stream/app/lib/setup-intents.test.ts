@@ -39,6 +39,48 @@ function failed(base: SetupDoc, fields: Record<string, string>): string {
 }
 
 describe("applyIntent", () => {
+  describe("declaring that a room is reinforced", () => {
+    const hall = {
+      id: "sp1",
+      kind: "acoustic",
+      label: "メインホール",
+      venueKey: "hall-a",
+    } as const;
+
+    it("sets the declaration without touching the fields the form never sent", () => {
+      const next = applied(doc({ spaces: [hall] }), {
+        intent: "update-space",
+        spaceId: "sp1",
+        reinforcedForm: "1",
+        reinforced: "on",
+      });
+
+      expect(next.spaces[0]).toEqual({ ...hall, reinforced: true });
+    });
+
+    // The patch is merged over the space, so a key the form did not carry would
+    // arrive as `undefined` and erase the field — and `label` is `min(1)`, so
+    // that produces a document the schema rejects.
+    it("clears it when the box was on screen and came back unchecked", () => {
+      const next = applied(doc({ spaces: [{ ...hall, reinforced: true }] }), {
+        intent: "update-space",
+        spaceId: "sp1",
+        reinforcedForm: "1",
+      });
+
+      expect(next.spaces[0]).toEqual(hall);
+    });
+
+    it("leaves it alone when the form had no checkbox at all", () => {
+      const next = applied(doc({ spaces: [{ ...hall, reinforced: true }] }), {
+        intent: "update-space",
+        spaceId: "sp1",
+      });
+
+      expect(next.spaces[0]).toEqual({ ...hall, reinforced: true });
+    });
+  });
+
   it("copies the model's default matrix in when a device is added", () => {
     const mixer = catalog.models.get("m_mixer");
     if (!mixer) throw new Error("fixture missing");

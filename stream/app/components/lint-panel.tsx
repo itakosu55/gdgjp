@@ -66,6 +66,7 @@ export function LintPanel({
   nodeNames = {},
   spaceNames = {},
   hrefForNode,
+  hrefForSpace,
   onFocus,
 }: {
   diagnostics: Diagnostic[];
@@ -80,6 +81,8 @@ export function LintPanel({
   spaceNames?: Record<string, string>;
   /** Selects a node in the inspector. Omit to leave findings without a link. */
   hrefForNode?: (nodeId: string) => string;
+  /** Selects a space in the inspector. */
+  hrefForSpace?: (spaceId: string) => string;
   /** Graph edge ids of the hovered finding's loop, or `null` on leaving it. */
   onFocus?: (edgeIds: ReadonlySet<string> | null) => void;
 }) {
@@ -137,6 +140,27 @@ export function LintPanel({
                     </button>
                   </SetupForm>
                 ))}
+                {/*
+                 * A fix `canApplyFix` refuses is still worth showing — it just
+                 * cannot be a button. `declare-reinforced` asserts a fact about
+                 * the room, so it is a link to the place a person answers for
+                 * it (§13.6).
+                 */}
+                {hrefForSpace
+                  ? (diagnostic.fixes ?? [])
+                      .filter((fix) => fix.kind === "declare-reinforced")
+                      .map((fix) => (
+                        <Link
+                          key={fix.spaceId}
+                          to={hrefForSpace(fix.spaceId)}
+                          replace
+                          data-fix-kind="declare-reinforced"
+                          className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        >
+                          {spaceNames[fix.spaceId] ?? "空間"} の設定を開く
+                        </Link>
+                      ))
+                  : null}
                 {hrefForNode
                   ? diagnostic.nodeIds
                       .filter((nodeId) => nodeNames[nodeId])

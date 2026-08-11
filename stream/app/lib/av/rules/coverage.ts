@@ -115,6 +115,13 @@ export const coverageRules: Rule = (graph) => {
  * correct answer: keeping the hall mic out of the hall speakers is how howling
  * is avoided. A critical that a correct setup cannot clear would break the
  * "fix one and re-run" loop the dock is built around.
+ *
+ * That reasoning has one exception, and it is the reason `Space.reinforced`
+ * cuts both ways (§13.5). A room that declares it reinforces has said the
+ * quiet part out loud — its mics *do* come out of its speakers — so silence in
+ * the hall stops being the deliberate choice and starts looking like a missing
+ * cable. Still not critical; the declaration raises info to warn and no
+ * further, because the room may simply not want *this* source.
  */
 function audienceRules(
   graph: BuiltGraph,
@@ -150,10 +157,20 @@ function audienceRules(
     }
 
     if (room.size > 0 && !reaches(room, reach)) {
+      // Any one reinforced room the source is missing is enough. `room` is
+      // every acoustic space with a speaker in it, and asking `every` would
+      // let a single undeclared overflow room silence the question.
+      const reinforced = Array.from(room).some((vertexId) => {
+        const vertex = graph.vertices.get(vertexId);
+        return vertex?.type === "space" && graph.spaces.get(vertex.spaceId)?.reinforced === true;
+      });
+
       diagnostics.push({
         ruleId: "source-not-reaching-room",
-        severity: "info",
-        message: `${source.label} の音は配信には乗っていますが、会場のスピーカーからは出ていません。`,
+        severity: reinforced ? "warn" : "info",
+        message: reinforced
+          ? `${source.label} の音は配信には乗っていますが、会場のスピーカーからは出ていません。拡声すると宣言された部屋があるので、結線漏れかもしれません。`
+          : `${source.label} の音は配信には乗っていますが、会場のスピーカーからは出ていません。`,
         nodeIds: [source.nodeId],
         linkIds: [],
       });

@@ -91,12 +91,47 @@ describe("applyOperation", () => {
     });
     expect(off.routing).toEqual([]);
   });
+
+  it("merges a space patch and leaves the keys it does not carry alone", () => {
+    const before = doc({ spaces: [{ ...HALL, venueKey: "hall-a" }] });
+
+    const next = applyOperation(before, {
+      kind: "update-space",
+      spaceId: "sp_hall",
+      patch: { reinforced: true },
+    });
+
+    expect(next.spaces[0]).toEqual({
+      id: "sp_hall",
+      kind: "acoustic",
+      label: "メインホール",
+      venueKey: "hall-a",
+      reinforced: true,
+    });
+  });
+
+  it("clears a declaration when the patch carries it as undefined", () => {
+    const before = doc({ spaces: [{ ...HALL, reinforced: true }] });
+
+    const next = applyOperation(before, {
+      kind: "update-space",
+      spaceId: "sp_hall",
+      patch: { reinforced: undefined },
+    });
+
+    expect(next.spaces[0]?.reinforced).toBeUndefined();
+  });
 });
 
 describe("applyFix", () => {
   it("marks fixes that still need a human decision as not auto-applicable", () => {
     expect(canApplyFix({ kind: "assign-space", nodeId: "n_mic" })).toBe(false);
     expect(canApplyFix({ kind: "add-device", category: "recorder", reason: "" })).toBe(false);
+    // The line is not "hard to decide" but "who may decide": rewiring is a
+    // change to the document, and a machine may make it. `declare-reinforced`
+    // asserts a fact about the room, and only a person can do that — otherwise
+    // the AI repair loop clears every howling finding with one checkbox.
+    expect(canApplyFix({ kind: "declare-reinforced", spaceId: "sp_hall" })).toBe(false);
     expect(canApplyFix({ kind: "set-coupling", nodeId: "n_mic", coupling: "isolated" })).toBe(true);
   });
 

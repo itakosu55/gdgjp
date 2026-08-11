@@ -52,6 +52,47 @@ test.describe("howling", () => {
   });
 });
 
+test.describe("reinforced spaces", () => {
+  // Same wiring as the fixture above. The declaration is the only difference,
+  // so this pins that the severity — and only the severity — moved.
+  test("demotes the loop to warn when the room declares it reinforces", async ({ page }) => {
+    await page.goto(setupUrl("e2e_setup_reinforced"));
+
+    const found = diagnostic(page, "acoustic-feedback-loop");
+    await expect(found).toHaveAttribute("data-severity", "warn");
+    await expect(found).toContainText("E2E ハンドマイク");
+    await expect(found).not.toContainText("ハウリングが発生する");
+    // The room already said so; offering it the declaration again is dead UI.
+    await expect(found.locator("[data-fix-kind='declare-reinforced']")).toHaveCount(0);
+    // Cutting the loop is still offered — a demotion is not a suppression.
+    await expect(found.getByRole("button", { name: /この経路を切る/ })).not.toHaveCount(0);
+  });
+
+  test("offers the declaration on an undeclared room", async ({ page }) => {
+    await page.goto(setupUrl("e2e_setup_howling"));
+
+    const found = diagnostic(page, "acoustic-feedback-loop");
+    await expect(found.locator("[data-fix-kind='declare-reinforced']")).toHaveCount(1);
+  });
+
+  // The whole point of the flag is that a person puts it there. Nothing else
+  // covers the checkbox reaching the document.
+  test("ticking the box in the inspector moves the finding", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_declare", undefined, "space:sp1"));
+
+    const found = diagnostic(page, "acoustic-feedback-loop");
+    await expect(found).toHaveAttribute("data-severity", "critical");
+
+    await saving(page, async () => {
+      await page.getByRole("checkbox", { name: "この部屋は拡声する" }).check();
+      await page.getByRole("button", { name: "保存" }).click();
+    });
+
+    await expect(found).toHaveAttribute("data-severity", "warn");
+  });
+});
+
 test.describe("remote participant echo", () => {
   test("reports an electrical Mix-Minus violation", async ({ page }) => {
     await page.goto(setupUrl("e2e_setup_mixminus"));
