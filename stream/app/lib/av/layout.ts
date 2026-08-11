@@ -646,17 +646,23 @@ function laneOrder(lanes: Map<string, string>, places: Map<string, Place>): stri
 /**
  * Splits the edges into the ones ranking may follow and the ones it may not.
  *
- * Anything arriving at an input is cut before the loop search runs. A mic is
- * where signal starts by definition, so the room feeding it is a return path,
- * not a step forward — and cutting it by rule rather than by whichever edge the
- * search happened to reach first is what keeps two identical mics together.
+ * Two kinds of edge are cut before the loop search runs, and for the same
+ * reason. A mic is where signal starts by definition, and a room is where
+ * signal leaves the cables — so a room feeding anything standing in it is a
+ * return path, not a step forward. Cutting both by rule, rather than by
+ * whichever edge the search happened to reach first, is what keeps two
+ * identical devices in the same column.
  */
 function splitByDirection(
   keys: readonly string[],
   edges: readonly DrawnEdge[],
   boxes: Map<string, Box>,
 ): { forward: DrawnEdge[]; back: DrawnEdge[] } {
-  const intoInput = new Set(edges.filter((edge) => boxes.get(edge.to)?.role === "input"));
+  const intoInput = new Set(
+    edges.filter(
+      (edge) => boxes.get(edge.to)?.role === "input" || boxes.get(edge.from)?.kind === "space",
+    ),
+  );
   const candidates = edges.filter((edge) => !intoInput.has(edge));
   const dropped = cutBackEdges(keys, candidates);
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OBS_SOURCES, satelliteRooms, testContext } from "./fixtures";
+import { OBS_SOURCES, satelliteRooms, testContext, twoJoinsInOneHall } from "./fixtures";
 import { buildGraph } from "./graph";
 import type { LayoutNode } from "./layout";
 import { layoutGraph } from "./layout";
@@ -600,6 +600,44 @@ describe("layoutGraph", () => {
     expect(again.nodes.map((node) => [node.key, node.x, node.y])).toEqual(
       first.nodes.map((node) => [node.key, node.x, node.y]),
     );
+  });
+
+  it("lays out twoJoinsInOneHall within the invariant: column count <= number of boxes", () => {
+    const layout = layoutOf(twoJoinsInOneHall());
+    expect(layout.columns).toBeLessThanOrEqual(layout.nodes.length);
+  });
+
+  it("places any two nodes sharing the same modelId in the same column in satelliteRooms", () => {
+    const setup = satelliteRooms();
+    const layout = layoutOf(setup);
+    const ctx = testContext();
+    const docGraph = buildGraph(setup, { devices: ctx.devices, models: ctx.models });
+
+    const columnsByModel = new Map<string, Set<number>>();
+    for (const node of layout.nodes) {
+      if (node.spaceKind) continue;
+
+      const resolved = docGraph.nodes.get(node.key);
+      if (!resolved) continue;
+
+      const modelId = resolved.model.id;
+      if (!columnsByModel.has(modelId)) columnsByModel.set(modelId, new Set());
+      columnsByModel.get(modelId)?.add(node.column);
+    }
+
+    for (const columns of columnsByModel.values()) {
+      expect(columns.size).toBe(1);
+    }
+  });
+
+  it("leaves no forward edge out of a space box", () => {
+    const layout = layoutOf(twoJoinsInOneHall());
+    for (const edge of layout.edges) {
+      const fromBox = layout.nodes.find((n) => n.key === edge.from);
+      if (fromBox?.spaceKind) {
+        expect(edge.back).toBe(true);
+      }
+    }
   });
 });
 

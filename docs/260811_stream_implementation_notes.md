@@ -506,9 +506,14 @@ Host links run out→out or in→in, so one end sits on the wrong face of its bo
 the box rather than have the jack drawn on a side it does not belong on. Back edges get a lane
 under the diagram, one per edge.
 
-Still open: identical devices can land in different columns, because which edge gets cut depends
-on DFS order (in the mixed audio/video fixture one handheld mic ranks at column 0 and its twin at
-column 4). Deterministic, but asymmetric.
+Ranking follows no edge out of a space, and that one rule is what keeps the picture symmetric. A
+room feeds every non-input device standing in it, so while space vertices took part in forward
+ranking a document chained mic → mixer → pc → meeting → laptop → hall → pc, and which link the
+DFS happened to cut decided the columns. Mics were never the problem — the input rank floor had
+already pinned them — so the asymmetry surfaced in the hubs instead: `twoJoinsInOneHall` drew 12
+columns for 9 boxes, quietly breaking the invariant only two small fixtures asserted. Cutting
+every edge that leaves a space takes it to 5, `satelliteRooms` from 8 to 5, and every pair of
+identical devices back into one column, with the other five fixtures unchanged.
 
 ## 13. Howling is not decided by the cycle
 

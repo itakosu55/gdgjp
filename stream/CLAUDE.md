@@ -239,8 +239,8 @@ component draws the `points` it is handed and owns no geometry.
   lane trains people to ignore red. Match on `LayoutEdge.sourceIds`, not `id`.
 - A room's two shapes select the same room, so they must not share an accessible name; only the
   frame's caption strip is clickable.
-- Still open: identical devices can land in different columns, because which edge gets cut depends
-  on DFS order.
+- **Ranking never follows an edge out of a space.** A room is where signal leaves the cables, so it
+  cannot chain one device to the next; that is what keeps two identical devices in one column.
 
 ## E2E (no real OAuth)
 
