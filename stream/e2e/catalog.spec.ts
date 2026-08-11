@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { saving } from "./helpers";
 import { E2E_PREFIX } from "./seed-data";
 
 test("the migration-seeded catalog is not empty", async ({ page }) => {
@@ -101,6 +102,35 @@ test("a jack can be told it faces the room even though it is an input", async ({
   await page.getByRole("button", { name: "端子を追加" }).click();
 
   await expect(page.getByRole("row").filter({ hasText: "usb_in" })).toContainText("空間へ出す");
+});
+
+/**
+ * The plumbing a checkbox needs and a text field does not. An unticked box is
+ * simply absent from the form data, so clearing it looks exactly like an edit
+ * that never mentioned it — the round trip is the only thing that proves the
+ * difference, and the unit tests reach the rule without ever reaching the form.
+ */
+test("a model can be told it cancels echo, and told to stop", async ({ page }) => {
+  const name = `${E2E_PREFIX}会議室DSP`;
+  await page.goto("/models");
+
+  await page.locator("#name").fill(name);
+  await page.locator("#category").selectOption("mixer");
+  await page.locator("#echoCancels").check();
+  await page.getByRole("button", { name: "追加" }).click();
+
+  await expect(page.getByRole("heading", { name })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "エコーキャンセラを内蔵する" })).toBeChecked();
+
+  await saving(page, async () => {
+    await page.getByRole("checkbox", { name: "エコーキャンセラを内蔵する" }).uncheck();
+    await page.getByRole("button", { name: "保存" }).click();
+  });
+
+  await page.reload();
+  await expect(
+    page.getByRole("checkbox", { name: "エコーキャンセラを内蔵する" }),
+  ).not.toBeChecked();
 });
 
 test("a broadcast app declares kinds of source, not a fixed pair of inputs", async ({ page }) => {
