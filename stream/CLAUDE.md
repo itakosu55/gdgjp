@@ -111,6 +111,12 @@ Three ideas carry the design:
   reach. `placeKeyOf` (`av/places.ts`) keys spaces into places by `venueKey ?? id`, so a hall's
   acoustic and visual spaces are one room. A meeting is not a place, so a join resolves to its
   transport space directly.
+- **The 所在 select asks for a place too.** `locationOptions` (`setup-view.ts`) offers one entry per
+  room — valued at the room's first space, which `inPlaceOrder` fixes — or the meetings when the
+  model is a join. `locationValue` reads a node standing in *either* half of a hall back to that one
+  entry: a `<select>` whose `defaultValue` matches no option shows its first one instead — here
+  「（割り当てなし）」 — and 保存 posts whatever is showing, so the mismatch would not merely
+  misreport the room but take it away on the next unrelated edit.
 - **Muting is per jack.** `SetupNode.isolatedPorts`; node-wide `coupling: "isolated"` is the
   shorthand for all of them. `isolationFixes` names the jacks a cycle enters and leaves a space by,
   not nodes picked by category (§4.3 — offer the operation people actually perform).

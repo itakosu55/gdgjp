@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { MODELS } from "~/lib/av/fixtures";
 import type { SetupDoc } from "~/lib/av/schema";
-import { collectPlaces } from "~/lib/setup-view";
+import { collectPlaces, locationOptions, locationValue } from "~/lib/setup-view";
 
 function doc(partial: Partial<SetupDoc> = {}): SetupDoc {
   return { schemaVersion: 1, spaces: [], nodes: [], links: [], routing: [], ...partial };
@@ -39,5 +40,67 @@ describe("collectPlaces", () => {
   it("leaves a meeting out", () => {
     const meeting = { id: "sp_meet", kind: "transport", label: "Meet" } as const;
     expect(collectPlaces(doc({ spaces: [meeting] }))).toEqual([]);
+  });
+});
+
+const MEETING = { id: "sp_meet", kind: "transport", label: "Meet" } as const;
+const byId = new Map(MODELS.map((model) => [model.id, model]));
+const MIC = byId.get("m_mic_dynamic");
+const JOIN = byId.get("m_meet");
+
+/**
+ * 所在 is one question with one answer per node: which room, or for a join,
+ * which meeting. What the graph then couples to is the jack's business, so the
+ * list must not put a room's two spaces up as rivals.
+ */
+describe("the 所在 list", () => {
+  it("offers a hall of both media once, as the room", () => {
+    expect(locationOptions(doc({ spaces: [AIR, SIGHT] }), MIC)).toEqual([
+      { value: "sp_air", label: "ホール" },
+    ]);
+  });
+
+  it("keeps meetings out of the list for gear", () => {
+    const options = locationOptions(doc({ spaces: [AIR, MEETING] }), MIC);
+    expect(options.map((option) => option.label)).toEqual(["ホール"]);
+  });
+
+  // A join is in a meeting, and a meeting is not a room — so this branch offers
+  // the spaces themselves, and is the reason the list is not simply the places.
+  it("offers a join its meetings and no room at all", () => {
+    expect(locationOptions(doc({ spaces: [AIR, SIGHT, MEETING] }), JOIN)).toEqual([
+      { value: "sp_meet", label: "Meet" },
+    ]);
+  });
+
+  // Kit whose model is unknown still stands somewhere.
+  it("offers rooms when there is no model to go on", () => {
+    expect(locationOptions(doc({ spaces: [AIR] }), undefined)).toHaveLength(1);
+  });
+
+  /**
+   * The other half of the same claim: a document that already points at a
+   * hall's sight half must select the hall, not fall through to the first
+   * option — a select with no matching option shows one that was never chosen,
+   * and the next save through that form would write it down.
+   */
+  describe("what the list starts on", () => {
+    const both = doc({ spaces: [AIR, SIGHT] });
+
+    it("reads either half of a hall as the hall", () => {
+      for (const spaceId of ["sp_air", "sp_sight"]) {
+        expect(locationValue(both, { id: "n1", spaceId })).toBe("sp_air");
+      }
+    });
+
+    it("leaves a join on its own meeting", () => {
+      const withMeeting = doc({ spaces: [AIR, MEETING] });
+      expect(locationValue(withMeeting, { id: "n1", spaceId: "sp_meet" })).toBe("sp_meet");
+    });
+
+    it("says nothing for a node that is nowhere, or points at a space that is gone", () => {
+      expect(locationValue(both, { id: "n1" })).toBe("");
+      expect(locationValue(both, { id: "n1", spaceId: "sp_deleted" })).toBe("");
+    });
   });
 });

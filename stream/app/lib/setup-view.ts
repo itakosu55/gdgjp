@@ -57,25 +57,6 @@ export function buildNodeInfo(
 }
 
 /**
- * The spaces worth offering as a node's 所在.
- *
- * A meeting is where a join is and a room is where everything else is, and the
- * two are never the alternative to one another. Offering both made "所在" read
- * as a free-form tag, and the nonsense combinations were then something the
- * graph had to report rather than something the form never asked.
- *
- * A room's several spaces are all offered: 所在 is a place, and each of the
- * node's jacks finds the space of that place its own medium can reach (§11.4),
- * so which of a hall's two spaces gets picked here does not change the graph.
- */
-export function spacesFor(doc: SetupDoc, model: DeviceModel | undefined): Space[] {
-  const wantsMeeting = model?.category === "software_conferencing";
-  return doc.spaces.filter((space) =>
-    wantsMeeting ? space.kind === "transport" : space.kind !== "transport",
-  );
-}
-
-/**
  * A room in the tree, keyed exactly as the diagram keys its frames.
  *
  * `placeKeyOf` is the layout's own rule (`venueKey ?? id`, and never a meeting),
@@ -125,6 +106,57 @@ export function placeOfNode(doc: SetupDoc, node: SetupNode): string | null {
 
 export function meetingOfNode(doc: SetupDoc, node: SetupNode): Space | undefined {
   return doc.spaces.find((space) => space.id === node.spaceId && space.kind === "transport");
+}
+
+/**
+ * The 所在 a node can be given: one entry per room, or the meetings for a join.
+ *
+ * A meeting is where a join is and a room is where everything else is, and the
+ * two are never the alternative to one another. Offering both made "所在" read
+ * as a free-form tag, and the nonsense combinations were then something the
+ * graph had to report rather than something the form never asked.
+ *
+ * Rooms and not spaces, because a hall's air and its sightline are one answer
+ * to "where is it": every jack of the node finds the space of that place its
+ * own medium can reach (§11.4), so either half builds the same graph. Listing
+ * both therefore put the same room on screen twice, under one name, as a choice
+ * with no consequence — and once a room is added as a room the two entries are
+ * not even told apart by their labels. The value stays a space id because
+ * `spaceId` names a space; the first of the place's spaces serves, since
+ * `inPlaceOrder` fixes which one that is regardless of how the room was typed.
+ */
+export type LocationOption = { value: string; label: string };
+
+export function locationOptions(doc: SetupDoc, model: DeviceModel | undefined): LocationOption[] {
+  if (model?.category === "software_conferencing") {
+    return doc.spaces
+      .filter((space) => space.kind === "transport")
+      .map((space) => ({ value: space.id, label: space.label }));
+  }
+  return collectPlaces(doc).flatMap((place) => {
+    const [first] = place.spaceIds;
+    return first ? [{ value: first, label: place.label }] : [];
+  });
+}
+
+/**
+ * Which of those entries the node currently stands on.
+ *
+ * A node may point at either half of a hall — the graph does not mind, and a
+ * document can arrive by paste or from the editor that asked one space at a
+ * time — but the list holds one entry per room, valued at the room's first
+ * space. Handing the raw `spaceId` to `defaultValue` would leave a node in the
+ * sight half matching no option at all, and a select with no matching option
+ * shows its first: the room would read as 「（割り当てなし）」, and the next
+ * unrelated edit through the same form would make that true.
+ */
+export function locationValue(doc: SetupDoc, node: SetupNode): string {
+  const space = doc.spaces.find((entry) => entry.id === node.spaceId);
+  if (!space) return "";
+  const key = placeKeyOf(space);
+  // A meeting is not a place, so it is offered as itself and stands for itself.
+  if (!key) return space.id;
+  return collectPlaces(doc).find((place) => place.key === key)?.spaceIds[0] ?? space.id;
 }
 
 export function describePort(nodeInfo: readonly NodeInfo[], ref: PortRef): string {

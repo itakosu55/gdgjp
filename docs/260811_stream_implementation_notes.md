@@ -153,6 +153,18 @@ hall's two spaces the form happened to store does not change the graph. A meetin
 place (`placeKeyOf` returns `null` for `transport`), so a join resolves to its transport space
 directly and no medium ever has two candidates.
 
+The form now asks it that way as well. Listing the spaces put a hall on screen twice under one
+name — a choice with no consequence, since either half reaches the same graph, offered to
+someone with no way to tell the two entries apart; once a room is added as a room the labels are
+not even different. `locationOptions` (`setup-view.ts`, replacing `spacesFor`) therefore offers
+one entry per place, valued at the place's first space because `spaceId` still names a space and
+`inPlaceOrder` fixes which one that is. The half that needed care is the value it starts on:
+a document may already point at a hall's sight half — by paste, or from the editor that asked
+one space at a time — and a `<select>` whose `defaultValue` matches no option silently shows its
+first, which here is 「（割り当てなし）」. Since the whole node form posts on 保存, that is not a
+display fault but a device losing its room on an edit that meant to rename it, so `locationValue`
+reads either half back to the entry the room is listed under.
+
 **Muting is per jack.** `SetupNode.isolatedPorts` lists the jacks that are off; node-wide
 `coupling: "isolated"` stays as the shorthand for all of them, which is what a headset wants.
 The per-jack form is not a nicety: a laptop is one node whose built-in mic *and* speaker both

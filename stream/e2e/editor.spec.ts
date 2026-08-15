@@ -27,15 +27,14 @@ test.describe("building a setup from scratch", () => {
 
   const url = setupUrl("e2e_setup_editing");
 
-  // Sound only, because the rest of this group wires a mic and a mixer and
-  // nothing in it is seen. A room with both media is asserted on where it
-  // matters — that the two halves come out as one place — in the unit tests.
+  // Both media, though the rest of this group only wires sound: the two spaces
+  // are what the panels have to keep treating as one room, and a hall of one
+  // medium would let that quietly stop being true.
   test("a room can be added", async ({ page }) => {
     await page.goto(url);
     await openAddPanel(page);
 
     await page.locator("#placeLabel").fill("E2E メインホール");
-    await page.locator("#place-visual").uncheck();
     await saving(page, () =>
       formWith(page, "#placeLabel").getByRole("button", { name: "追加" }).click(),
     );
@@ -63,6 +62,11 @@ test.describe("building a setup from scratch", () => {
     await page.goto(setupUrl("e2e_setup_editing", undefined, "n1"));
 
     const nodeForm = formWith(page, "#space-n1");
+    // 所在 is a room, so the hall appears once even though it is two spaces.
+    // Offering both was a choice with no consequence — either half reaches the
+    // same graph — put to someone with no way to tell the two entries apart.
+    const options = nodeForm.locator("#space-n1 option");
+    await expect(options.filter({ hasText: "E2E メインホール" })).toHaveCount(1);
     await nodeForm.locator("#space-n1").selectOption({ label: "E2E メインホール" });
     await saving(page, () => nodeForm.getByRole("button", { name: "保存" }).click());
 

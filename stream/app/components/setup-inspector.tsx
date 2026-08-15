@@ -14,7 +14,14 @@ import {
 } from "~/lib/av/labels";
 import type { SetupDoc, SetupLink, Space } from "~/lib/av/schema";
 import type { NodeInfo } from "~/lib/setup-view";
-import { collectPlaces, describePort, placeOfNode, portLabel, spacesFor } from "~/lib/setup-view";
+import {
+  collectPlaces,
+  describePort,
+  locationOptions,
+  locationValue,
+  placeOfNode,
+  portLabel,
+} from "~/lib/setup-view";
 
 /**
  * The right panel: everything about whatever is selected.
@@ -108,13 +115,13 @@ export function SetupInspector({
           <select
             id={`space-${info.node.id}`}
             name="spaceId"
-            defaultValue={info.node.spaceId ?? ""}
+            defaultValue={locationValue(doc, info.node)}
             className={selectClassName}
           >
             <option value="">（割り当てなし）</option>
-            {spacesFor(doc, info.model).map((space) => (
-              <option key={space.id} value={space.id}>
-                {space.label}
+            {locationOptions(doc, info.model).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
               </option>
             ))}
           </select>
