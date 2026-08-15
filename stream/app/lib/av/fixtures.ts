@@ -661,6 +661,71 @@ export function satelliteRooms(): SetupDoc {
 }
 
 /**
+ * `twoJoinsInOneHall` with the guest moved home, which is the ordinary case and
+ * a different finding.
+ *
+ * The loop is the same loop and it crosses the same meeting, but its return
+ * into the guest's microphone now comes out of the speaker their own join is
+ * playing to, with nothing in between — so their canceller holds both ends of
+ * the reference (§9.7.4) and the hop it covers is enough to open the loop. The
+ * hall mic is not routed to MAIN, so the transport cycle is again the only one
+ * here and nothing can pass on plain howling.
+ */
+export function remoteGuestOnBuiltins(): SetupDoc {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      { id: "sp_hall", kind: "acoustic", label: "メインホール" },
+      { id: "sp_home", kind: "acoustic", label: "登壇者の自宅" },
+      { id: "sp_mtg", kind: "transport", label: "登壇 Meet", meetingKey: "meet-abc" },
+    ],
+    nodes: [
+      { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+      { id: "n_mixer", deviceId: "d_mixer", spaceId: "sp_hall" },
+      { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+      { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
+      {
+        id: "n_join_stream",
+        modelId: "m_meet",
+        hostNodeId: "n_pc",
+        spaceId: "sp_mtg",
+        assignments: [
+          { port: "mic_in", hostPort: "usb_in" },
+          { port: "spk_out", hostPort: "usb_out" },
+        ],
+      },
+      { id: "n_laptop", deviceId: "d_laptop", spaceId: "sp_home" },
+      // Both jacks, where `twoJoinsInOneHall` has only the microphone. That one
+      // line is the whole difference between a loop AEC can help with and a loop
+      // it cannot: there, the sound arrived through the hall PA, which this join
+      // never played to.
+      {
+        id: "n_join_guest",
+        modelId: "m_meet",
+        hostNodeId: "n_laptop",
+        spaceId: "sp_mtg",
+        assignments: [
+          { port: "mic_in", hostPort: "builtin_mic" },
+          { port: "spk_out", hostPort: "builtin_spk" },
+        ],
+      },
+    ],
+    links: [
+      { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+      { id: "l2", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+      { id: "l3", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+      { id: "l4", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
+    ],
+    // Mix-Minus, correctly: what came back from the meeting reaches the room and
+    // not the send. The loop survives it, because it closes through the air.
+    routing: [
+      { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
+      { nodeId: "n_mixer", inPort: "usb_in", bus: "main" },
+    ],
+  };
+}
+
+/**
  * One laptop, its own built-in mic and speaker, and nothing else in the path.
  * This is the return trip a conferencing app's own canceller removes, so it
  * must not be reported as critical (§9.7.4).

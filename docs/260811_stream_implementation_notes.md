@@ -651,3 +651,33 @@ meeting, so the declaration earns its keep by finding it.
 so §12's acceptance condition is untouched. `reinforced` still does not reach it either — that flag
 asserts loop gain below unity in one room, not that echo is inaudible, and echo is a defect far
 below oscillation.
+
+## The transport loop was asking the wrong rule
+
+`transportDiagnostic` performed no AEC analysis at all. It did not need to while the only fixture
+was `twoJoinsInOneHall()`, whose presenter laptop assigns `mic_in → builtin_mic` and nothing else:
+the sound reaching that microphone came out of the *house PA*, which that join never played to, so
+§9.1's "no reference signal" is exactly right there. It is not right about a guest joining from
+home on their built-in pair, where the return leg is that join's own speaker — and the same lint
+run was already demoting that identical hop to warn under `remote-echo-acoustic`. One rule called
+the hop cancellable and the other called it uncancellable, in one pass over one graph.
+
+Fixing it meant lifting the first shape out of `roomHop`, which by construction only ever described
+a path with **exactly two space edges**. A transport cycle has eight — two rooms and two crossings
+of the meeting — so the analysis was not merely absent, it was inexpressible. `selfCancelledHop`
+asks the same question of a single hop: same owner on both faces, the same conferencing app reached
+walking outward in both directions, and nothing but that join, its host and the face owner in
+between. `acousticHops` pairs space edges on the *vertex* they meet at rather than on `spaceId`,
+which is what lets a cycle be read like a path — including the hop straddling the arbitrary edge
+the cycle happens to have been cut at. `roomHop` now delegates, so the two rules cannot drift.
+
+Any one covered hop demotes. A loop is broken wherever its gain is broken, so unlike `reinforced`
+— a claim made per room, which every room therefore has to make — one hop is enough. Nothing is
+lost by it: the hall's own bleed is still reported at critical by `remote-echo-acoustic`, and the
+demotion is to warn rather than silence because AEC attenuates and does not null, the same
+semantics §9.7.4 already chose.
+
+`remoteGuestOnBuiltins()` is the new fixture and is deliberately `twoJoinsInOneHall()` with one
+line changed — the guest's `spaceId`, and the `spk_out` assignment that follows from being
+somewhere else. Two documents that differ in where a person is sitting, and the finding differs
+with them, which is the only honest way to test a rule about rooms.

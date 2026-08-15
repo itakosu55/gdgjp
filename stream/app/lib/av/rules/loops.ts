@@ -83,9 +83,7 @@ export const loopRules: Rule = (graph) => {
     diagnostics.push({
       ruleId: "remote-echo-acoustic",
       severity: canceller ? "warn" : "critical",
-      message: canceller
-        ? `${describeNode(graph, resolved.id)} の音声は ${describeNode(graph, canceller)} の中だけで回り込んでいます (${describePath(graph, nodeIds)})。鳴らしている機材と拾っている機材が同じなので、その機材のエコーキャンセラが消せる範囲ですが、音量を上げると破綻します。`
-        : `${describeNode(graph, resolved.id)} の音声がスピーカーからマイクへ回り込んで送信側に戻っています (${describePath(graph, nodeIds)})。ヘッドセットにするか、該当スピーカーを配信専用 (isolated) にしてください。`,
+      message: cancellerMessage(graph, resolved, canceller, nodeIds),
       nodeIds,
       linkIds: linkIdsOf(acoustic),
       cycle: acoustic,
@@ -190,8 +188,17 @@ function visualDiagnostic(graph: BuiltGraph, cycle: GraphEdge[]): Diagnostic {
 
 /**
  * A loop through a meeting is not howling, it is a delayed echo that becomes
- * howling — and no echo canceller can remove it, because the sound came back
- * through *another* join's speaker and so has no reference signal.
+ * howling. Usually no echo canceller can remove it, because the sound came back
+ * through *another* join's speaker and so has no reference signal — but that is
+ * a fact about the wiring and not about meetings, so it is asked rather than
+ * assumed. A remote guest on their laptop's built-in pair closes this loop with
+ * a hop their own join both played and heard, which is the one thing AEC is for
+ * (§9.7.4), and calling that uncancellable is a finding correct wiring cannot
+ * clear.
+ *
+ * Any one hop is enough. A loop is broken wherever its gain is broken, so the
+ * quantifier is the opposite of `reinforced`'s (§13.4) — that one is a claim
+ * made per room, so every room on the cycle has to make it.
  */
 function transportDiagnostic(graph: BuiltGraph, cycle: GraphEdge[]): Diagnostic {
   const nodeIds = pathNodeIds(graph, cycle);
@@ -199,10 +206,18 @@ function transportDiagnostic(graph: BuiltGraph, cycle: GraphEdge[]): Diagnostic 
   const meeting = spaceIds.find((id) => graph.spaces.get(id)?.kind === "transport");
   const label = (meeting && graph.spaces.get(meeting)?.label) ?? "ミーティング";
 
+  let canceller: string | null = null;
+  for (const hop of acousticHops(graph, cycle)) {
+    canceller = selfCancelledHop(graph, cycle, hop);
+    if (canceller) break;
+  }
+
   return {
     ruleId: "transport-echo-loop",
-    severity: "critical",
-    message: `${label} を経由して音声が戻る閉ループがあります (${describePath(graph, nodeIds)})。別の join のスピーカーを経由して戻る音は参照信号を持たないため、会議アプリのエコーキャンセラでは消せません。遅延したエコーになり、やがてハウリングします。ミーティングに入っている PC のマイクとスピーカーを切る (isolated) か、その join を退出させてください。`,
+    severity: canceller ? "warn" : "critical",
+    message: canceller
+      ? `${label} を経由して音声が戻る閉ループがありますが、${describeNode(graph, canceller)} が鳴らした音を同じ機材が拾っているので、そのエコーキャンセラは参照信号を持っています (${describePath(graph, nodeIds)})。消えるのはその 1 箇所ぶんで、ループ自体は閉じたままなので、音量を上げると遅延したエコーとして戻ります。`
+      : `${label} を経由して音声が戻る閉ループがあります (${describePath(graph, nodeIds)})。別の join のスピーカーを経由して戻る音は参照信号を持たないため、会議アプリのエコーキャンセラでは消せません。遅延したエコーになり、やがてハウリングします。ミーティングに入っている PC のマイクとスピーカーを切る (isolated) か、その join を退出させてください。`,
     nodeIds,
     linkIds: linkIdsOf(cycle),
     spaceIds,
@@ -243,28 +258,134 @@ function transportCycle(graph: BuiltGraph, spaceId: string): GraphEdge[] | null 
  * the room and hearing it back, because that is what having a reference means.
  * A model may claim the hardware; it may not claim the installation.
  */
+type Canceller = { nodeId: string; shape: "faces" | "declared" };
+
 function aecCanceller(
   graph: BuiltGraph,
   join: ResolvedNode,
   hop: RoomHop,
   path: readonly GraphEdge[],
-): string | null {
+): Canceller | null {
   const host = join.node.hostNodeId;
   if (!host) return null;
 
-  const faces = faceOwner(graph, hop.into);
-  if (faces && faces === faceOwner(graph, hop.outOf)) {
-    const between = [...nodesTouched(graph, path)].filter(
-      (nodeId) => nodeId !== join.id && nodeId !== host && nodeId !== faces,
-    );
-    if (between.length === 0) return faces;
-  }
+  const owner = selfCancelledHop(graph, path, hop);
+  if (owner) return { nodeId: owner, shape: "faces" };
 
   for (const nodeId of hop.toRoom) {
+    // The join stands on both legs by construction — the path starts at its
+    // speaker and ends at its microphone — so a conferencing model that claimed
+    // `echoCancels` would demote every setup it appeared in, which is the
+    // findings-level suppression §13.8 turned down. The join and the machine it
+    // runs on are what the first shape judges, under the stricter test.
+    if (nodeId === join.id || nodeId === host) continue;
     if (!hop.fromRoom.has(nodeId)) continue;
-    if (graph.nodes.get(nodeId)?.model.echoCancels) return nodeId;
+    if (graph.nodes.get(nodeId)?.model.echoCancels) return { nodeId, shape: "declared" };
   }
   return null;
+}
+
+/**
+ * The two shapes are two different facts, so they get two different sentences.
+ * "Rings out of the same box it is picked up by" is true of a laptop and simply
+ * false of a room DSP, which owns neither transducer and is only in a position
+ * to subtract because of where it was patched.
+ */
+function cancellerMessage(
+  graph: BuiltGraph,
+  join: ResolvedNode,
+  canceller: Canceller | null,
+  nodeIds: readonly string[],
+): string {
+  const who = describeNode(graph, join.id);
+  const where = describePath(graph, nodeIds);
+  if (!canceller) {
+    return `${who} の音声がスピーカーからマイクへ回り込んで送信側に戻っています (${where})。ヘッドセットにするか、該当スピーカーを配信専用 (isolated) にしてください。`;
+  }
+  const unit = describeNode(graph, canceller.nodeId);
+  return canceller.shape === "faces"
+    ? `${who} の音声は ${unit} の中だけで回り込んでいます (${where})。鳴らしている機材と拾っている機材が同じなので、その機材のエコーキャンセラが消せる範囲ですが、音量を上げると破綻します。`
+    : `${who} の音声がスピーカーからマイクへ回り込んでいますが、${unit} が部屋への送出と部屋からの受けの両方に入っています (${where})。${unit} のエコーキャンセラが消せる範囲ですが、音量を上げると破綻します。`;
+}
+
+/**
+ * The first shape, asked of one room hop rather than of a whole path.
+ *
+ * Written this way because the same question has to be answerable about a hop
+ * sitting in the middle of a transport cycle, where the path enters two rooms
+ * and crosses a meeting twice and so is not the `join → room → join` shape at
+ * all. Everything the answer depends on is local to the hop: who owns its two
+ * faces, and what stands between those faces and the join driving them. So the
+ * walk starts at the room and stops at the first conferencing app it meets in
+ * either direction — the same join on both sides, or this is somebody else's
+ * sound coming back and there is no reference for it.
+ */
+function selfCancelledHop(
+  graph: BuiltGraph,
+  path: readonly GraphEdge[],
+  hop: AcousticHop,
+): string | null {
+  const faces = faceOwner(graph, hop.into);
+  if (!faces || faces !== faceOwner(graph, hop.outOf)) return null;
+
+  const played = legToJoin(graph, path, hop.at - 1, -1);
+  const heard = legToJoin(graph, path, hop.at + 2, 1);
+  if (!played || !heard || played.join !== heard.join) return null;
+
+  const host = graph.nodes.get(played.join)?.node.hostNodeId;
+  if (!host) return null;
+
+  // A mixer or a house PA in between re-times and re-mixes what was played and
+  // the reference stops matching, so nothing may stand here but the join, the
+  // machine it runs on, and the unit that is the room's two faces — which is
+  // the machine itself for a laptop's built-in pair, and a separate box for a
+  // speakerphone hanging off it.
+  for (const nodeId of [...played.touched, ...heard.touched]) {
+    if (nodeId !== played.join && nodeId !== host && nodeId !== faces) return null;
+  }
+  return faces;
+}
+
+/**
+ * Walks away from a room hop until it reaches a conferencing app, collecting
+ * what it touched on the way. Wraps around the ends of a cycle, which is where
+ * the interesting hop usually sits.
+ */
+function legToJoin(
+  graph: BuiltGraph,
+  path: readonly GraphEdge[],
+  from: number,
+  step: 1 | -1,
+): { join: string; touched: Set<string> } | null {
+  const closed = isClosed(path);
+  const touched = new Set<string>();
+  let index = from;
+
+  for (let taken = 0; taken < path.length; taken += 1) {
+    if (index < 0 || index >= path.length) {
+      if (!closed) return null;
+      index = ((index % path.length) + path.length) % path.length;
+    }
+    const edge = path[index];
+    if (!edge) return null;
+
+    const ids = [...nodesTouched(graph, [edge])];
+    for (const nodeId of ids) touched.add(nodeId);
+    const join = ids.find(
+      (nodeId) => graph.nodes.get(nodeId)?.model.category === "software_conferencing",
+    );
+    if (join) return { join, touched };
+
+    index += step;
+  }
+
+  return null;
+}
+
+function isClosed(path: readonly GraphEdge[]): boolean {
+  const first = path[0];
+  const last = path[path.length - 1];
+  return path.length > 1 && Boolean(first && last && first.from === last.to);
 }
 
 /**
@@ -292,31 +413,52 @@ function strandedCanceller(
   return null;
 }
 
-/** One acoustic room, entered once and left once — the only shape AEC addresses. */
-type RoomHop = {
-  into: GraphEdge;
-  outOf: GraphEdge;
+/** One acoustic room, entered and left again. `at` indexes `into` in the path. */
+type AcousticHop = { into: GraphEdge; outOf: GraphEdge; at: number };
+
+/** A hop on a one-way path, where the two legs are also whole stretches of it. */
+type RoomHop = AcousticHop & {
   /** What carries the sound to the room, and what carries it back. */
   toRoom: Set<string>;
   fromRoom: Set<string>;
 };
 
-function roomHop(graph: BuiltGraph, path: readonly GraphEdge[]): RoomHop | null {
-  const at = path.flatMap((edge, index) => (edge.kind === "space" ? [index] : []));
-  const [first, second] = at;
-  if (at.length !== 2 || first === undefined || second === undefined) return null;
+/**
+ * Every acoustic room a path enters and leaves, in traversal order.
+ *
+ * A hop is two space edges meeting at the room's own vertex — the only shape a
+ * space vertex has, since cables end at the air and the air ends at cables.
+ * Pairing on that vertex rather than on `spaceId` is what lets a cycle be read
+ * exactly like a one-way path, wrap included: a cycle is cut at an arbitrary
+ * edge, and the hop straddling the cut is a hop like any other.
+ */
+function acousticHops(graph: BuiltGraph, path: readonly GraphEdge[]): AcousticHop[] {
+  const closed = isClosed(path);
+  const hops: AcousticHop[] = [];
 
-  const into = path[first];
-  const outOf = path[second];
-  if (!into || !outOf || !into.spaceId || into.spaceId !== outOf.spaceId) return null;
-  if (graph.spaces.get(into.spaceId)?.kind !== "acoustic") return null;
+  for (let at = 0; at < path.length; at += 1) {
+    const into = path[at];
+    const outOf = at === path.length - 1 ? (closed ? path[0] : undefined) : path[at + 1];
+    if (!into || !outOf) continue;
+    if (into.kind !== "space" || outOf.kind !== "space" || into.to !== outOf.from) continue;
+    if (!into.spaceId || graph.spaces.get(into.spaceId)?.kind !== "acoustic") continue;
+    hops.push({ into, outOf, at });
+  }
+
+  return hops;
+}
+
+function roomHop(graph: BuiltGraph, path: readonly GraphEdge[]): RoomHop | null {
+  const spaceEdges = path.flatMap((edge, index) => (edge.kind === "space" ? [index] : []));
+  if (spaceEdges.length !== 2) return null;
+  const [hop] = acousticHops(graph, path);
+  if (!hop) return null;
 
   // The hop edges themselves carry the faces, so each leg keeps its own.
   return {
-    into,
-    outOf,
-    toRoom: nodesTouched(graph, path.slice(0, first + 1)),
-    fromRoom: nodesTouched(graph, path.slice(second)),
+    ...hop,
+    toRoom: nodesTouched(graph, path.slice(0, hop.at + 1)),
+    fromRoom: nodesTouched(graph, path.slice(hop.at + 1)),
   };
 }
 

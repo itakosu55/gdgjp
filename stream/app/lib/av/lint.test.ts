@@ -6,6 +6,7 @@ import {
   hybridMonitorMix,
   laptopOnlyMeeting,
   mediaSourceOnStream,
+  remoteGuestOnBuiltins,
   satelliteRooms,
   speakerphoneMeeting,
   testContext,
@@ -497,6 +498,52 @@ describe("transport echo", () => {
     expect(loops[0]?.spaceIds).toEqual(
       expect.arrayContaining(["sp_hall", "sp_satellite", "sp_mtg"]),
     );
+  });
+
+  it("drops to warn when a hop on the loop is a join's own built-in pair", () => {
+    const found = lint(remoteGuestOnBuiltins(), testContext());
+    const loop = found.find((d) => d.ruleId === "transport-echo-loop");
+
+    // Same loop, same meeting, one jack different: the guest's own join played
+    // the sound their own mic picked up, so the canceller has a reference for it
+    // and one broken hop opens the loop. It is still a loop, so it is still
+    // reported.
+    expect(loop?.severity).toBe("warn");
+    expect(loop?.nodeIds).toContain("n_laptop");
+    expect(loop?.message).toContain("登壇者ノートPC");
+  });
+
+  it("keeps critical when the same guest is in the hall instead", () => {
+    // The one difference that matters, asserted as a difference: in the hall the
+    // return arrives through the house PA, which no join ever played to.
+    const home = lint(remoteGuestOnBuiltins(), testContext());
+    const hall = lint(twoJoinsInOneHall(), testContext());
+
+    expect(home.find((d) => d.ruleId === "transport-echo-loop")?.severity).toBe("warn");
+    expect(hall.find((d) => d.ruleId === "transport-echo-loop")?.severity).toBe("critical");
+  });
+
+  it("keeps critical when both ends are rooms with a PA", () => {
+    // Two reinforced rooms, and neither hop is one unit's own pair — a mixer and
+    // a house speaker stand between every join and the air it reaches.
+    const loop = lint(satelliteRooms(), testContext()).find(
+      (d) => d.ruleId === "transport-echo-loop",
+    );
+
+    expect(loop?.severity).toBe("critical");
+  });
+
+  it("still offers the mute, because a covered hop is not a cleared loop", () => {
+    const loop = lint(remoteGuestOnBuiltins(), testContext()).find(
+      (d) => d.ruleId === "transport-echo-loop",
+    );
+
+    expect(loop?.fixes).toContainEqual({
+      kind: "set-coupling",
+      nodeId: "n_laptop",
+      coupling: "isolated",
+      portKey: "builtin_mic",
+    });
   });
 
   it("says nothing about a meeting with a single join", () => {

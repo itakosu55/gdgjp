@@ -147,12 +147,23 @@ the world — so `LintPanel` renders it as a link to the space, not a button.
 
 **`DeviceModel.echoCancels` is a spec, and the wiring is still the judge** (§13.7). AEC needs one
 unit holding both ends of its reference, and the path proves that on its own only for a unit that
-is *both faces of the room* — a laptop's built-in pair, a speakerphone. A room DSP owns neither
-transducer and stands exactly where a plain mixer stands, so the catalog says which box has the
-hardware and `aecCanceller` still requires it to stand on **both legs** of the room hop before
-`remote-echo-acoustic` drops to warn. A model may claim the hardware; it may not claim the
+is *both faces of the room* — a laptop's built-in pair, a speakerphone. That first shape is
+`selfCancelledHop`, and it is asked of **one room hop**, never of a whole path, because the same
+question has to be answerable about a hop in the middle of a transport cycle. A room DSP owns
+neither transducer and stands exactly where a plain mixer stands, so the catalog says which box has
+the hardware and `aecCanceller` still requires it to stand on **both legs** of the room hop before
+`remote-echo-acoustic` drops to warn — and never counts the join or its host there, which stand on
+both legs by construction and would turn `echoCancels` on a conferencing model into the
+findings-level suppression §13.8 refused. A model may claim the hardware; it may not claim the
 installation. Cutting both ways again: a declaring unit on only one leg raises
 `aec-reference-missing`, having nothing to subtract, or nothing to subtract it from.
+
+**AEC is a second axis, and `transport-echo-loop` moves on it** (§9.7.3). "The sound came back
+through *another* join's speaker" is true of a guest sitting in the hall and false of a guest at
+home on their laptop's built-in pair, so the rule asks instead of assuming: **any one** hop on the
+cycle that `selfCancelledHop` covers drops it to warn. The quantifier is the opposite of
+`reinforced`'s because a loop breaks wherever its gain breaks, while a declaration is made per
+room. The two axes never meet — `reinforced` still does nothing at all here.
 
 ## Three relationships, and only one of them is a link
 
