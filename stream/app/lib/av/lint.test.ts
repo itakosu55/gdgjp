@@ -344,9 +344,9 @@ describe("remote participant echo", () => {
    * the same matrix wired the same way, so these two cases differ in exactly
    * one thing — whether the model claims an echo canceller.
    */
-  const throughDsp = (deviceId: string) =>
+  const throughDsp = (deviceId: string, hall: SetupDoc["spaces"][number] = HALL) =>
     doc({
-      spaces: [HALL],
+      spaces: [hall],
       nodes: [
         { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
         { id: "n_dsp", deviceId, spaceId: "sp_hall" },
@@ -428,6 +428,117 @@ describe("remote participant echo", () => {
     expect(stranded?.nodeIds).toEqual(["n_dsp"]);
     // The echo is still uncancelled, so the loop keeps its own severity.
     expect(found.find((d) => d.ruleId === "remote-echo-acoustic")?.severity).toBe("critical");
+  });
+
+  /**
+   * §13.7, reversed. `d_mixer` claims no canceller, so this moves on the second
+   * axis alone — the room's own declaration.
+   *
+   * A declared room was reporting one air hop twice at two severities: warn
+   * from `acoustic-feedback-loop`, whose gain its operator had taken on, and
+   * critical from here. And in that room both fixes this rule offers — a
+   * headset, an isolated speaker — deny what the room just said it is for, so
+   * the critical was one no wiring change could clear.
+   */
+  it("demotes the return through a room that declares it reinforces", () => {
+    const found = lint(throughDsp("d_mixer", { ...HALL, reinforced: true }), testContext());
+    const echo = found.find((d) => d.ruleId === "remote-echo-acoustic");
+
+    expect(echo?.severity).toBe("warn");
+    expect(echo?.message).toContain("拡声すると宣言されている");
+    // A demotion is not a suppression: the path is still named, and giving the
+    // reinforcement up is still an operation somebody may choose.
+    expect(echo?.nodeIds).toContain("n_join");
+    expect(echo?.fixes).toContainEqual({
+      kind: "set-coupling",
+      nodeId: "n_speaker",
+      coupling: "isolated",
+      portKey: "in",
+    });
+    // The room already declared, so it is not asked to declare again.
+    expect(echo?.fixes?.some((fix) => fix.kind === "declare-reinforced")).toBe(false);
+  });
+
+  it("keeps the same wiring critical in a room that has not declared", () => {
+    const echo = lint(throughDsp("d_mixer"), testContext()).find(
+      (d) => d.ruleId === "remote-echo-acoustic",
+    );
+
+    expect(echo?.severity).toBe("critical");
+    // §13.6 — a demotion nobody can find is a demotion that does not exist.
+    expect(echo?.fixes).toContainEqual({ kind: "declare-reinforced", spaceId: "sp_hall" });
+  });
+
+  /**
+   * Both axes at once. They are separate facts and either one demotes, but the
+   * canceller is the more specific of the two — it names a box that removes
+   * this echo — so it is what the sentence reports.
+   */
+  it("reports the canceller rather than the declaration when both apply", () => {
+    const echo = lint(throughDsp("d_dsp", { ...HALL, reinforced: true }), testContext()).find(
+      (d) => d.ruleId === "remote-echo-acoustic",
+    );
+
+    expect(echo?.severity).toBe("warn");
+    expect(echo?.message).toContain("会議室DSP");
+  });
+
+  /**
+   * §13.4's quantifier, which the declaration keeps here: a claim is made about
+   * one room, so every room the return passes through has to make it. The
+   * meeting is played into the hall, the hall's mic feeds a second room, and
+   * that room's mic is what goes back to the meeting.
+   */
+  const acrossTwoRooms = (second: SetupDoc["spaces"][number]) =>
+    doc({
+      spaces: [{ ...HALL, reinforced: true }, second],
+      nodes: [
+        { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+        { id: "n_mic2", deviceId: "d_mic2", spaceId: "sp_hall2" },
+        { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+        { id: "n_speaker2", deviceId: "d_speaker2", spaceId: "sp_hall2" },
+        { id: "n_mixer", deviceId: "d_mixer" },
+        { id: "n_pc", deviceId: "d_pc" },
+        {
+          id: "n_join",
+          deviceId: "d_meet",
+          hostNodeId: "n_pc",
+          assignments: [
+            { port: "mic_in", hostPort: "usb_in" },
+            { port: "spk_out", hostPort: "usb_out" },
+          ],
+        },
+      ],
+      links: [
+        { id: "l1", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
+        { id: "l2", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+        { id: "l3", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+        { id: "l4", from: ["n_mixer", "aux1_out"], to: ["n_speaker2", "in"] },
+        { id: "l5", from: ["n_mic2", "out"], to: ["n_mixer", "ch2"] },
+        { id: "l6", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+      ],
+      routing: [
+        { nodeId: "n_mixer", inPort: "usb_in", bus: "main" },
+        { nodeId: "n_mixer", inPort: "ch1", bus: "aux1" },
+        { nodeId: "n_mixer", inPort: "ch2", bus: "usb" },
+      ],
+    });
+
+  it("needs every room on the return to declare, not just the one being played into", () => {
+    const undeclared = { id: "sp_hall2", kind: "acoustic", label: "Sub Hall" } as const;
+    const one = lint(acrossTwoRooms(undeclared), testContext()).find(
+      (d) => d.ruleId === "remote-echo-acoustic",
+    );
+    const both = lint(acrossTwoRooms({ ...undeclared, reinforced: true }), testContext()).find(
+      (d) => d.ruleId === "remote-echo-acoustic",
+    );
+
+    expect(one?.severity).toBe("critical");
+    // Only the room that has not declared is asked to.
+    expect(one?.fixes?.filter((fix) => fix.kind === "declare-reinforced")).toEqual([
+      { kind: "declare-reinforced", spaceId: "sp_hall2" },
+    ]);
+    expect(both?.severity).toBe("warn");
   });
 });
 

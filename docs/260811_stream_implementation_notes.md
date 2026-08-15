@@ -673,11 +673,48 @@ the cycle happens to have been cut at. `roomHop` now delegates, so the two rules
 
 Any one covered hop demotes. A loop is broken wherever its gain is broken, so unlike `reinforced`
 — a claim made per room, which every room therefore has to make — one hop is enough. Nothing is
-lost by it: the hall's own bleed is still reported at critical by `remote-echo-acoustic`, and the
-demotion is to warn rather than silence because AEC attenuates and does not null, the same
-semantics §9.7.4 already chose.
+lost by it: the hall's own bleed is still reported by `remote-echo-acoustic` — at critical unless
+that room has declared, which is the next section — and the demotion is to warn rather than
+silence because AEC attenuates and does not null, the same semantics §9.7.4 already chose.
 
 `remoteGuestOnBuiltins()` is the new fixture and is deliberately `twoJoinsInOneHall()` with one
 line changed — the guest's `spaceId`, and the `spk_out` assignment that follows from being
 somewhere else. Two documents that differ in where a person is sitting, and the finding differs
 with them, which is the only honest way to test a rule about rooms.
+
+## The same hop, told twice, at two severities
+
+§13.7 refused to let `reinforced` touch `remote-echo-acoustic`, and its argument was about physics:
+reinforcement claims a room's loop gain stays under 1, an echo is a defect far below the level at
+which anything oscillates, and folding two physical conditions into one checkbox is a bad trade.
+That argument is still correct. It just was not the argument that decided this.
+
+What decided it is visible in one real document. A hall that had declared showed
+`acoustic-feedback-loop` at warn on 会場スピーカー → 空気 → 会場マイク, and `remote-echo-acoustic`
+at critical on a path *containing that same hop*. One rule said the operator had taken the gain on
+that hop; the other said the same hop was critical. This is exactly the shape §9.7.3's addendum
+found when `remote-echo-acoustic` was demoting a hop that `transport-echo-loop` was calling
+uncancellable — a rule disagreeing with a rule about one edge of one graph.
+
+The second reason is the fixes. In a declared room the two `isolationFixes` this rule offers are
+"use a headset" and "make the house speaker stream-only", and both of them are "stop being this
+room". A critical whose every offered fix denies the document is a critical correct wiring cannot
+clear, which is the thing that breaks fix-one-and-re-run — the same judgement that keeps every
+coverage rule at warn.
+
+So the demotion is not a claim that the echo is inaudible, and the message says so: the path is
+still named, the fixes still stand (giving reinforcement up remains a real option, §13.4), and the
+sentence hands the hop to the person holding its gain instead of repeating advice that room has
+already refused. Writing the third sentence is most of what this change is; the predicate is four
+lines.
+
+`declarableRooms` returns the rooms that *could* cover a path, or null when none could. Null rather
+than an empty list, because "no room can cover this" and "every room covering this has declared"
+are different answers and `every` on an empty array is the wrong one. Any non-acoustic space on the
+path returns null: sound coming back through another join's speaker is not something a room ever
+made a claim about.
+
+`echoManaged` — the separate declaration §13.7 itself gestured at — was not built. The room in
+question has a plain mixer, so the honest answer to "is this room's AEC handling it" is no, and the
+checkbox would be a lie in the one setup that motivated it. What is true about that room is that it
+reinforces and puts the online audio through the PA, and `reinforced` already says that.

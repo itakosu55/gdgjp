@@ -80,14 +80,29 @@ export const loopRules: Rule = (graph) => {
     const nodeIds = pathNodeIds(graph, acoustic);
     const hop = roomHop(graph, acoustic);
     const canceller = hop ? aecCanceller(graph, resolved, hop, acoustic) : null;
+    // The second axis, and §13.7 reversed (see the addendum there). A declared
+    // room reported the very same air hop twice at two severities: warn from
+    // `acoustic-feedback-loop`, whose gain the operator had taken on, and
+    // critical from here. Worse, in that room both fixes offered below deny the
+    // declaration, and a critical no wiring change can clear is the thing that
+    // breaks fix-one-and-re-run. The demotion does not claim the echo is
+    // inaudible; warn is not silence.
+    const rooms = declarableRooms(graph, acoustic);
+    const reinforced = rooms?.every((id) => graph.spaces.get(id)?.reinforced) === true;
+
     diagnostics.push({
       ruleId: "remote-echo-acoustic",
-      severity: canceller ? "warn" : "critical",
-      message: cancellerMessage(graph, resolved, canceller, nodeIds),
+      severity: canceller || reinforced ? "warn" : "critical",
+      message: cancellerMessage(graph, resolved, canceller, reinforced, nodeIds),
       nodeIds,
       linkIds: linkIdsOf(acoustic),
       cycle: acoustic,
-      fixes: isolationFixes(graph, acoustic),
+      fixes: [
+        ...isolationFixes(graph, acoustic),
+        ...(rooms ?? [])
+          .filter((id) => !graph.spaces.get(id)?.reinforced)
+          .map((spaceId) => ({ kind: "declare-reinforced" as const, spaceId })),
+      ],
     });
 
     const stranded = hop ? strandedCanceller(graph, hop) : null;
@@ -286,21 +301,49 @@ function aecCanceller(
 }
 
 /**
- * The two shapes are two different facts, so they get two different sentences.
- * "Rings out of the same box it is picked up by" is true of a laptop and simply
- * false of a room DSP, which owns neither transducer and is only in a position
- * to subtract because of where it was patched.
+ * Which rooms could cover this path by declaring, or null if none could.
+ *
+ * §13.4's quantifier, unchanged: reinforcement is a claim made about one room,
+ * so every room on the way has to make it. A path that leaves the air at all —
+ * across a meeting, through another join's speaker — is not the room's business
+ * and no set of declarations covers it, which is why anything but an acoustic
+ * space disqualifies the whole path rather than merely failing to count.
+ */
+function declarableRooms(graph: BuiltGraph, path: readonly GraphEdge[]): string[] | null {
+  const spaceIds = spaceIdsOf(path);
+  if (spaceIds.length === 0) return null;
+  if (spaceIds.some((id) => graph.spaces.get(id)?.kind !== "acoustic")) return null;
+  return spaceIds;
+}
+
+/**
+ * Three facts, so three sentences.
+ *
+ * The two AEC shapes are different from each other: "rings out of the same box
+ * it is picked up by" is true of a laptop and simply false of a room DSP, which
+ * owns neither transducer and is only in a position to subtract because of
+ * where it was patched.
+ *
+ * The reinforced sentence is different again, and it is careful not to claim
+ * the echo is inaudible — §13.7's objection stands, an echo is a defect far
+ * below the level at which a loop oscillates. What the declaration changes is
+ * that both offered fixes (a headset, an isolated speaker) now contradict the
+ * room's stated purpose, so the finding stops naming them and hands the hop to
+ * the person who took its gain.
  */
 function cancellerMessage(
   graph: BuiltGraph,
   join: ResolvedNode,
   canceller: Canceller | null,
+  reinforced: boolean,
   nodeIds: readonly string[],
 ): string {
   const who = describeNode(graph, join.id);
   const where = describePath(graph, nodeIds);
   if (!canceller) {
-    return `${who} の音声がスピーカーからマイクへ回り込んで送信側に戻っています (${where})。ヘッドセットにするか、該当スピーカーを配信専用 (isolated) にしてください。`;
+    return reinforced
+      ? `${who} の音声が会場スピーカーからマイクへ回り込み、送信側に戻っています (${where})。この部屋は拡声すると宣言されているため、この経路は構成上避けられません。リモート側には遅延したエコーが返るので、会場マイクのゲインとスピーカーとの位置関係で抑えてください。`
+      : `${who} の音声がスピーカーからマイクへ回り込んで送信側に戻っています (${where})。ヘッドセットにするか、該当スピーカーを配信専用 (isolated) にしてください。`;
   }
   const unit = describeNode(graph, canceller.nodeId);
   return canceller.shape === "faces"

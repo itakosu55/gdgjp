@@ -139,7 +139,12 @@ counted.
 howling's necessary condition; the sufficient one is loop gain, which idea 2 above refuses to hold.
 So a room may say it reinforces, and `acoustic-feedback-loop` drops to warn — but only when *every*
 space on the cycle says so, and never for `stream-monitor-loop` or `transport-echo-loop`, which
-placement cannot fix. It has to cut both ways or it rots into a lint-disable: in a reinforced room
+placement cannot fix. **`remote-echo-acoustic` drops with it** (§13.7, reversed 2026-08-15): a
+declared room was reporting one air hop twice at two severities, and in that room both fixes that
+rule offers — a headset, an isolated speaker — deny what the room says it is for, so the critical
+was one no wiring change could clear. Same quantifier, plus: any non-acoustic space on the path and
+no declaration counts, because the room never claimed anything about sound returning through
+somebody else's speaker. It has to cut both ways or it rots into a lint-disable: in a reinforced room
 `source-not-reaching-room` rises info → warn, because the reason it was info (the hall mic is
 deliberately kept out of the hall speakers) is the very thing the room just denied. `declare-reinforced`
 is a `Fix` that **`canApplyFix` refuses** — machines may rewire, only people may assert facts about
