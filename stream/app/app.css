@@ -119,3 +119,36 @@
     @apply bg-popover text-popover-foreground;
   }
 }
+
+/* The editor's own scrollbars.
+
+   The setup editor draws its canvas' two bars itself (`diagram-surface.tsx`),
+   because there it needs them over the picture rather than beside it. Its side
+   panels and its lint dock only need to stop disagreeing with that one: the
+   platform's default is both wider than anything else in the shell and, on
+   Windows, opaque grey against every one of these surfaces. Same translucent
+   foreground, so the three read as one scrollbar in three places. */
+@utility scroll-slim {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 25%, transparent) transparent;
+
+  &::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+    background-color: color-mix(in oklab, var(--foreground) 25%, transparent);
+  }
+  &::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--foreground) 45%, transparent);
+  }
+  &::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}

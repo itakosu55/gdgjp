@@ -224,6 +224,40 @@ One route, one action, dispatched on a hidden `intent`. Every write goes `applyO
   plus a three-state `auto | open | closed` per panel. Write every narrow override out per state —
   a container query that silently loses to a `group-data-` rule looks exactly like one that never
   matched, and this editor has had that bug.
+- **The dragged size is a second variable.** `--left-size` / `--right-size` / `--dock-size` are set
+  inline from React state; `--left` and `--right` are still written by the class rules, which is
+  what keeps the container queries able to collapse a column. Never set `--left`/`--right` inline —
+  inline beats every one of those rules, including the ones that fire when the panel becomes an
+  overlay. `ResizeHandle` carries no size of its own and is positioned off the same variables the
+  columns are; hide it per state, for the same reason the column rules are written per state.
+  Sizes are **not persisted** — reading `localStorage` in a `useState` initialiser makes the server
+  and the browser render different columns, and applying it in an effect makes the shell jump on
+  every load. A width the shell always opens at is better than either.
+- **The canvas is a map** (`diagram-surface.tsx`), and still a native scroll container:
+  `ctrl`/`⌘` and the wheel zooms about the pointer, a bare wheel is left to the browser, a drag
+  pans, and the platform's scrollbars are hidden in favour of two translucent ones drawn over the
+  picture. Do not replace the scroller with a transform camera — selection scrolls a box into view,
+  `dragWire` calls `scrollIntoViewIfNeeded`, and an overflowing region is what the keyboard
+  scrolls. `zoomSurface` is the one implementation of "zoom and hold a point still", and the ±
+  buttons go through it too, anchored on the pane's middle. Its `flushSync` is load-bearing: the
+  pane resizes as a *result* of the scale, so the scroll that assumes the new size cannot be
+  written before the render. The drag skips `[data-port-grip]` (that drag is a cable) and is
+  mouse-only (a touchscreen already pans this element); a pan that moved swallows the click it
+  would otherwise end on, and the pane is `select-none` from the pointer landing, because by the
+  time a drag is long enough to be a pan the browser has been selecting for several frames. The
+  bars measure from the DOM on mount, on `scale`, on new `children` **and** from a
+  `ResizeObserver` — an initial observation is the one delivery a browser may skip, and the bar is
+  then missing exactly when it is the only sign there is more picture off the edge.
+- **The picture floats on a mat of half a pane on every side**, which is exactly the room needed to
+  pull any edge of it to the middle and no more: with less, zooming into something near an edge
+  clamps against the scroll and the point under the cursor slides away; with more, the picture can
+  be pushed off screen and has to be hunted for. It falls out that the scroll range *is* the
+  picture's size. `padFor` sizes it, and `measure` **writes it to the element** as `--pad-x` /
+  `--pad-y` rather than rendering it, adding the same number to the scroll in the same breath —
+  React re-rendering to change a padding paints the picture in its new place one frame before the
+  scroll that cancels the move, so a dragged panel edge would shove the picture sideways. Anything
+  reading content coordinates goes through `padOf`; `SURFACE_PAD` is only the gap `resetSurface`
+  (幅に合わせる) leaves at the corner, which is why that button cannot just scroll to zero.
 - **Lint and layout run in the browser.** The loader sends the document and the catalog and nothing
   else; `buildGraph` → `lint` → `layoutGraph` are `useMemo`s, so they run during SSR too. The
   catalog carries **every** unit in the ledger, or `device-not-in-event` degrades into

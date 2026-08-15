@@ -431,6 +431,119 @@ test.describe("the editor shell", () => {
     await page.getByRole("button", { name: "インスペクタを開く" }).click();
     await expect(page.locator("#space-n2")).toBeInViewport();
   });
+
+  /**
+   * The canvas is a map, not a document — but only while ctrl is down. A bare
+   * wheel reads down the rig the way it reads down everything else, and ctrl
+   * and the wheel changes the zoom while holding the point under the cursor
+   * still, so reading one machine's jacks is one gesture and not "zoom, then
+   * hunt for where it went".
+   */
+  test("ctrl and a wheel over the canvas zoom about the pointer", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_sources", "diagram"));
+    await page.waitForLoadState("networkidle");
+
+    const surface = page.getByTestId("diagram-surface");
+    const box = await surface.boundingBox();
+    if (!box) throw new Error("the canvas was not on screen");
+    const at = { x: box.x + 420, y: box.y + 220 };
+
+    // The diagram point under the cursor, read the way the wiring drag reads
+    // it — off the rendered box and the viewBox, so it is in diagram units and
+    // survives the picture being resized under it.
+    const under = () =>
+      surface.locator("svg").evaluate((svg: SVGSVGElement, point: { x: number; y: number }) => {
+        const rect = svg.getBoundingClientRect();
+        const view = svg.viewBox.baseVal;
+        return {
+          x: ((point.x - rect.left) / rect.width) * view.width,
+          y: ((point.y - rect.top) / rect.height) * view.height,
+        };
+      }, at);
+
+    // The mat: half a pane on every side, which makes the scroll travel the
+    // picture's own size and lets either edge of it reach the middle.
+    const room = await surface.evaluate((el) => {
+      const svg = el.querySelector("svg");
+      const picture = svg?.getBoundingClientRect() ?? { width: 0, height: 0 };
+      return {
+        x: el.scrollWidth - el.clientWidth - picture.width,
+        y: el.scrollHeight - el.clientHeight - picture.height,
+      };
+    });
+    expect(Math.abs(room.x)).toBeLessThanOrEqual(2);
+    expect(Math.abs(room.y)).toBeLessThanOrEqual(2);
+
+    await page.mouse.move(at.x, at.y);
+
+    // Bare, the wheel is still the browser's.
+    const top = await surface.evaluate((el) => el.scrollTop);
+    await page.mouse.wheel(0, -240);
+    await expect.poll(() => surface.evaluate((el) => el.scrollTop)).toBeLessThan(top);
+    await expect(page.getByText("表示 100%")).toHaveCount(1);
+
+    // Back off the top of the mat before zooming: a point held still has to be
+    // one the scroll can still be moved to.
+    await page.mouse.wheel(0, 240);
+    await expect.poll(() => surface.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+    const before = await under();
+    await page.keyboard.down("Control");
+    await page.mouse.wheel(0, -300);
+    await page.keyboard.up("Control");
+    await expect(page.getByText("表示 100%")).toHaveCount(0);
+
+    const after = await under();
+    expect(Math.abs(after.x - before.x)).toBeLessThan(2);
+    expect(Math.abs(after.y - before.y)).toBeLessThan(2);
+    // And it zoomed rather than scrolled: the pane never grows its own bars.
+    expect(await surface.evaluate((el) => el.offsetWidth - el.clientWidth)).toBe(0);
+  });
+
+  /** Dragging the canvas is a pan, not a sweep across the labels. */
+  test("dragging the canvas leaves nothing selected", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_sources", "diagram"));
+    await page.waitForLoadState("networkidle");
+
+    const box = await page.getByTestId("diagram-surface").boundingBox();
+    if (!box) throw new Error("the canvas was not on screen");
+
+    await page.mouse.move(box.x + 260, box.y + 140);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 520, box.y + 200, { steps: 12 });
+    await page.mouse.up();
+
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("");
+  });
+
+  /**
+   * Both panel edges are draggable, and dragging one may not disturb the
+   * `auto | open | closed` flag that the container queries read — the two are
+   * separate CSS variables for exactly this reason.
+   */
+  test("the tree's edge widens it without unsettling the collapse toggle", async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 900 });
+    await page.goto(setupUrl("e2e_setup_howling", "diagram"));
+
+    const handle = page.getByRole("separator", { name: "構成の内容の幅" });
+    const box = await handle.boundingBox();
+    if (!box) throw new Error("the handle was not on screen");
+    await expect(handle).toHaveAttribute("aria-valuenow", "264");
+
+    await page.mouse.move(box.x + box.width / 2, 400);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 100, 400, { steps: 8 });
+    await page.mouse.up();
+    await expect(handle).toHaveAttribute("aria-valuenow", "364");
+
+    // Collapsed and reopened, the panel comes back the width it was dragged to.
+    await page.getByRole("button", { name: "左パネルを折りたたむ" }).click();
+    await expect(handle).toBeHidden();
+    await page.getByRole("button", { name: "左パネルを開く" }).click();
+    await expect(handle).toHaveAttribute("aria-valuenow", "364");
+  });
 });
 
 /**

@@ -1,10 +1,18 @@
 import { ChevronDown, Menu, Minus, PanelLeft, PanelRight, Plus } from "lucide-react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ShouldRevalidateFunctionArgs } from "react-router";
 import { Link, redirect, useFetcher, useSearchParams } from "react-router";
+import {
+  DiagramSurface,
+  SURFACE_PAD,
+  clampScale,
+  resetSurface,
+  zoomSurface,
+} from "~/components/diagram-surface";
 import { Header } from "~/components/header";
 import { LintPanel, SeverityChips, severityCounts } from "~/components/lint-panel";
+import { ResizeHandle } from "~/components/resize-handle";
 import { SetupInspector } from "~/components/setup-inspector";
 import { SetupTree } from "~/components/setup-tree";
 import { AddPanel, CablesView, JsonView, RoutingView } from "~/components/setup-views";
@@ -138,6 +146,20 @@ const VIEWS = [
 /** `auto` follows the screen width; the other two are the user overriding it. */
 type PanelState = "auto" | "open" | "closed";
 
+/**
+ * How far each region may be dragged, and where it opens.
+ *
+ * The floors are the width the region stops being readable at rather than a
+ * round number: the tree indents three levels (所在 → 機械 → アプリ) before it
+ * gets to a name, and the inspector holds `<select>`s whose options are device
+ * names. The ceilings exist because the picture is the thing being read, and a
+ * panel that can eat the whole pane is a panel somebody eventually loses the
+ * canvas behind.
+ */
+const LEFT = { min: 200, max: 480, open: 264 } as const;
+const RIGHT = { min: 240, max: 520, open: 320 } as const;
+const DOCK = { min: 88, max: 460, open: 208 } as const;
+
 export default function SetupEditorPage({ loaderData, actionData }: Route.ComponentProps) {
   const { models, devices, eventDeviceIds, event, setup } = loaderData;
   const [params, setParams] = useSearchParams();
@@ -195,6 +217,13 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
   const [highlight, setHighlight] = useState<ReadonlySet<string> | null>(null);
   const surface = useRef<HTMLDivElement>(null);
 
+  // Sizes, not states: a region can be `closed` and still remember how wide it
+  // was, which is what makes the collapse toggle a toggle rather than a reset.
+  // Deliberately not persisted — see the note in `CLAUDE.md`.
+  const [leftWidth, setLeftWidth] = useState<number>(LEFT.open);
+  const [rightWidth, setRightWidth] = useState<number>(RIGHT.open);
+  const [dockHeight, setDockHeight] = useState<number>(DOCK.open);
+
   const hrefFor = (nextSelection: string, nextView?: string) => {
     const next = new URLSearchParams(params);
     next.set("sel", nextSelection);
@@ -235,8 +264,19 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
   const fitWidth = () => {
     const element = surface.current;
     if (!element || layout.width === 0) return;
-    setZoom(Math.max(0.4, Math.min(2, (element.clientWidth - 32) / layout.width)));
+    // The scale that fits, and the scroll that puts the picture's corner back in
+    // the pane's — the picture floats on a mat now, so scrolling to nothing
+    // would land on the mat's corner and show empty space.
+    resetSurface(
+      element,
+      clampScale((element.clientWidth - SURFACE_PAD * 2) / layout.width),
+      setZoom,
+    );
   };
+
+  /** The ± buttons, anchored on the middle of the pane the way the wheel is on the cursor. */
+  const zoomBy = (step: number) =>
+    zoomSurface(surface.current, zoom, clampScale(zoom + step), null, setZoom);
 
   // A room is two shapes at once — the dashed box for the air in it, and the
   // frame round everything standing in it — so selecting one has to light both.
@@ -373,9 +413,22 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
       {/* The four regions. The dock spans the centre column only, so collapsing
           it never disturbs the two panels and neither panel loses its height. */}
       <div
+        // The dragged size is a *second* variable, and `--left` is still
+        // written by the class rules below. Setting `--left` inline instead
+        // would beat every one of them, including the container queries that
+        // collapse the column when the panel becomes an overlay — and a panel
+        // holding a 264px column it is no longer standing in is exactly the
+        // silent-loss bug this shell has had before.
+        style={
+          {
+            "--left-size": `${leftWidth}px`,
+            "--right-size": `${rightWidth}px`,
+            "--dock-size": `${dockHeight}px`,
+          } as CSSProperties
+        }
         className={cn(
           "relative grid min-h-0 flex-1",
-          "[--left:264px] [--right:320px]",
+          "[--left:var(--left-size)] [--right:var(--right-size)]",
           "grid-cols-[var(--left)_minmax(0,1fr)_var(--right)] grid-rows-[minmax(0,1fr)_auto]",
           "[grid-template-areas:'left_center_right'_'left_dock_right']",
           "group-data-[left=closed]/app:[--left:0px] group-data-[right=closed]/app:[--right:0px]",
@@ -411,7 +464,7 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
               <Plus className="size-4" />
             </IconButton>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div className="min-h-0 flex-1 overflow-auto scroll-slim">
             {adding ? <AddPanel available={available} softwareModels={softwareModels} /> : null}
             <SetupTree
               doc={doc}
@@ -443,13 +496,16 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
             <span className="flex-1" />
             {view === "diagram" ? (
               <div className="flex shrink-0 items-center gap-1">
-                <IconButton label="縮小" onClick={() => setZoom((z) => Math.max(0.4, z - 0.1))}>
+                <IconButton label="縮小" onClick={() => zoomBy(-0.1)}>
                   <Minus className="size-4" />
                 </IconButton>
-                <span className="min-w-10 text-center text-xs text-muted-foreground tabular-nums">
+                <span
+                  title="Ctrl + ホイールで拡大縮小"
+                  className="min-w-10 text-center text-xs text-muted-foreground tabular-nums"
+                >
                   {Math.round(zoom * 100)}%
                 </span>
-                <IconButton label="拡大" onClick={() => setZoom((z) => Math.min(2, z + 0.1))}>
+                <IconButton label="拡大" onClick={() => zoomBy(0.1)}>
                   <Plus className="size-4" />
                 </IconButton>
                 <button
@@ -463,25 +519,29 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
             ) : null}
           </div>
 
-          <div ref={surface} className="min-h-0 flex-1 overflow-auto">
-            {view === "diagram" ? (
-              <div className="w-max min-w-full p-4">
-                <SignalFlowDiagram
-                  layout={layout}
-                  alerts={alerts}
-                  highlight={highlight}
-                  scale={zoom}
-                  selected={selectedKeys}
-                  onSelect={selectOnCanvas}
-                  canWire={(from, to) => wireFor(from, to) !== null}
-                  onWire={onWire}
-                />
-              </div>
-            ) : null}
-            {view === "routing" ? <RoutingView nodeInfo={nodeInfo} enabled={enabled} /> : null}
-            {view === "cables" ? <CablesView doc={doc} nodeInfo={nodeInfo} /> : null}
-            {view === "json" ? <JsonView doc={doc} /> : null}
-          </div>
+          {/* The picture gets a pane that zooms and pans; the three table-shaped
+              views get the plain scrolling one they have always had, because a
+              wheel that zoomed a table would be a wheel that cannot read it. */}
+          {view === "diagram" ? (
+            <DiagramSurface viewport={surface} scale={zoom} onScale={setZoom}>
+              <SignalFlowDiagram
+                layout={layout}
+                alerts={alerts}
+                highlight={highlight}
+                scale={zoom}
+                selected={selectedKeys}
+                onSelect={selectOnCanvas}
+                canWire={(from, to) => wireFor(from, to) !== null}
+                onWire={onWire}
+              />
+            </DiagramSurface>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-auto scroll-slim">
+              {view === "routing" ? <RoutingView nodeInfo={nodeInfo} enabled={enabled} /> : null}
+              {view === "cables" ? <CablesView doc={doc} nodeInfo={nodeInfo} /> : null}
+              {view === "json" ? <JsonView doc={doc} /> : null}
+            </div>
+          )}
         </div>
 
         <aside
@@ -498,7 +558,7 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
               インスペクタ
             </h2>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-3">
+          <div className="min-h-0 flex-1 overflow-auto p-3 scroll-slim">
             {/* Keyed on the selection so the uncontrolled fields inside are torn
                 down and rebuilt when a different thing is selected. React reuses
                 a `<select>` across a re-render and leaves its selected option
@@ -520,7 +580,24 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-col border-t [grid-area:dock]">
+        <section className="relative flex min-w-0 flex-col border-t [grid-area:dock]">
+          {/* On the dock's own top edge rather than out in the grid: the dock is
+              as tall as its header plus whatever the list was dragged to, and a
+              handle placed by arithmetic on those two would go wrong the first
+              time the header wraps. */}
+          {dockOpen ? (
+            <ResizeHandle
+              axis="y"
+              label="検査結果の高さ"
+              value={dockHeight}
+              min={DOCK.min}
+              max={DOCK.max}
+              reset={DOCK.open}
+              invert
+              onResize={setDockHeight}
+              className="inset-x-0 top-0 -translate-y-1/2"
+            />
+          ) : null}
           <div className="flex flex-none items-center gap-2 px-2 py-1.5">
             <IconButton
               label={dockOpen ? "検査結果を折りたたむ" : "検査結果を開く"}
@@ -541,7 +618,7 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
             </span>
           </div>
           {dockOpen ? (
-            <div className="max-h-52 overflow-auto border-t">
+            <div className="overflow-auto border-t scroll-slim [height:var(--dock-size)]">
               <LintPanel
                 diagnostics={diagnostics}
                 nodeNames={nodeNames}
@@ -553,6 +630,43 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
             </div>
           ) : null}
         </section>
+
+        {/* Both edges, positioned off the same variables the columns are, so a
+            handle cannot drift from the border it belongs to. Each is written
+            out per state for the reason the column rules above are: while a
+            panel is an overlay there is no column to drag, and while it is
+            closed there is no edge. */}
+        <ResizeHandle
+          axis="x"
+          label="構成の内容の幅"
+          value={leftWidth}
+          min={LEFT.min}
+          max={LEFT.max}
+          reset={LEFT.open}
+          onResize={setLeftWidth}
+          className={cn(
+            "inset-y-0 -translate-x-1/2 [left:var(--left)]",
+            "group-data-[left=closed]/app:hidden",
+            "@max-[720px]:group-data-[left=auto]/app:hidden",
+            "@max-[720px]:group-data-[left=open]/app:hidden",
+          )}
+        />
+        <ResizeHandle
+          axis="x"
+          label="インスペクタの幅"
+          value={rightWidth}
+          min={RIGHT.min}
+          max={RIGHT.max}
+          reset={RIGHT.open}
+          invert
+          onResize={setRightWidth}
+          className={cn(
+            "inset-y-0 translate-x-1/2 [right:var(--right)]",
+            "group-data-[right=closed]/app:hidden",
+            "@max-[1000px]:group-data-[right=auto]/app:hidden",
+            "@max-[1000px]:group-data-[right=open]/app:hidden",
+          )}
+        />
 
         {/* Only ever reachable while a panel is overlaying the work surface. */}
         <button

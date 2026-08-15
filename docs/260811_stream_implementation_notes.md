@@ -401,6 +401,93 @@ button. Hovering a finding passes its `Diagnostic.cycle` to the diagram as `high
 fades everything else — the danger colour alone cannot tell two reported cycles apart, because
 both wear it.
 
+### The canvas is a map, and the regions have edges
+
+Two complaints, one shape: the picture was read through a pane whose only controls were a pair of
+±10% buttons and the platform's scrollbars, and the four regions were fixed at the widths the
+shell was written with.
+
+**`ctrl` and the wheel zooms, about the pointer.** The reason anybody zooms into this picture is
+to read one machine's jacks, and a zoom anchored on the corner walks that machine off the edge —
+worse the further in you are, so precisely when the gesture was worth making. Holding the point
+under the cursor still is one line of arithmetic, and it deletes the whole "zoom, then hunt"
+loop. The ± buttons go through the same `zoomSurface`, anchored on the middle of the pane, so the
+two controls do not disagree about what zooming is.
+
+The modifier is not ceremony. This shipped first with a bare wheel zooming, map-style, and a rig
+is taller than its pane far more often than it needs a different scale — so the commonest thing
+anyone wants to do with a wheel here is the thing that had been taken away. `ctrl` is the
+modifier every canvas already uses for this, and it is also how a trackpad pinch arrives, so one
+test covers both gestures and shift goes back to meaning sideways because the browser never
+stopped meaning that by it.
+
+**The picture floats on a mat, and the mat is half a pane on every side.** Any less and zooming
+into something near an edge clamps against the scroll, so the point under the cursor slides away
+exactly where the anchoring was most wanted; any more and the whole picture can be shoved off
+screen and has to be hunted for. Half a pane is the boundary between those: it is precisely the
+room to bring either edge of the picture to the middle, and it makes the scroll range equal the
+picture's own size, whatever the pane is doing.
+
+The mat is *written to the element*, not rendered. It is a fact about the pane's measured size,
+so React would learn it one render late — and a padding that changes in a render paints the
+picture in its new place a frame before the scroll that cancels the move. Growing the leading pad
+by n moves everything n to the right and scrolling n to the right puts it back, so `measure` does
+both in the same breath and a pane that changes width — a dragged panel edge, a resized window,
+hydration finding a real size for the first time — leaves the picture exactly where it was. The
+cost is a second reader: `padOf` is how anything working in content coordinates asks where the
+picture's origin is, and `SURFACE_PAD` demotes to the gap 幅に合わせる leaves at the corner, which
+is why that button now goes through `resetSurface` instead of scrolling to zero.
+
+**The pane stayed a native scroll container.** A camera holding its own `{x, y, scale}` is the
+obvious shape and it is the wrong one here: `SetupDoc` has no coordinates and the layout is
+regenerated every render, so there is nothing a transform expresses that a scroll offset does
+not — and three things already lean on the pane scrolling. Selecting anything scrolls its box
+into view; `dragWire` puts a jack under the cursor with `scrollIntoViewIfNeeded`; and an
+overflowing region is what a keyboard can scroll at all, which is the only non-pointer route
+around a picture this wide. The one cost is that the scroll which holds a point still cannot be
+written until the pane has resized, which is what the single `flushSync` in `zoomSurface` buys.
+Reading the scale back a frame later instead draws the jump and then corrects it — more visible
+than the thing it was avoiding.
+
+**The scrollbars are drawn rather than the platform's**, and that is not decoration. The picture
+runs off the pane in both directions and the mat adds a pane's worth of travel to each, so the
+bar is the only thing saying how much of the rig is off the edge — and the platform's is both the
+loudest thing on a pane full of 1px cables and, where it hides until you scroll, absent exactly
+when it is the only signal that there is more picture past the edge. They are laid *over* the picture rather than given a lane, because a lane means gaining a
+horizontal bar makes the pane shorter, which can hand it a vertical one as well. The side panels
+and the dock get `scroll-slim` instead of their own drawn pair: they only need to stop
+disagreeing with the canvas.
+
+The drag that pans starts anywhere on the pane, because a box is a click target and not a handle,
+and opts out only on `[data-port-grip]`, where a drag is a cable being patched. It is mouse-only
+— a touchscreen is already panning this element and a second implementation moves everything
+twice — and a pan that actually moved swallows the click it would otherwise have ended on, or the
+picture selects whatever it happened to slide under the cursor.
+
+The pane goes `select-none` when the pointer lands rather than when the pan starts. A pan is only
+a pan after a few pixels of slop, and by then the browser has been sweeping a selection across
+whatever the drag ran over — the panel edges avoid this by refusing the pointerdown's default
+outright, which a surface full of click targets cannot do without taking focus away with it.
+Clearing the selection once, at the first movement past the slop, covers the caret the
+pointerdown had already dropped.
+
+**The four regions are draggable, and the size is a second CSS variable.** `--left-size` /
+`--right-size` / `--dock-size` come from React state via `style`; `--left` and `--right` are still
+written by the class rules. Setting `--left` inline would beat every one of them — including the
+container queries that collapse the column when the panel becomes an overlay — and a panel
+holding a 264px column it is no longer standing in is the same silent-loss bug this shell has
+had before, in a new place. `ResizeHandle` therefore carries no size: it is positioned off the
+same variables the columns are, so it cannot drift from the border it belongs to, and it is
+hidden per state for the reason the column rules are written per state. It is a focusable
+`role="separator"` with arrow keys, because unlike the wiring drag there is no form anywhere that
+says the same thing; double-click restores the width the shell opens at.
+
+Sizes are deliberately **not** persisted. Reading `localStorage` in a `useState` initialiser makes
+the server and the browser render different columns, and applying it in an effect makes the shell
+visibly jump on every load. A width the editor always opens at is better than either, and the
+question of whether these should follow a person across sessions is a different one from whether
+they should be draggable at all.
+
 ## E2E (no real OAuth)
 
 `e2e/global-setup.ts` skips the IdP the way wiki's does: apply the local migrations, write
