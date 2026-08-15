@@ -1,5 +1,6 @@
 import type { RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { Severity } from "~/lib/av/diagnostics";
 import { SPACE_KIND_SHORT_LABELS, SPACE_MEDIUM_LABELS } from "~/lib/av/labels";
 import type {
   Layout,
@@ -11,6 +12,7 @@ import type {
   Point,
 } from "~/lib/av/layout";
 import type { PortDirection } from "~/lib/av/types";
+import { worse } from "~/lib/setup-view";
 import { cn } from "~/lib/utils";
 
 /**
@@ -22,11 +24,20 @@ import { cn } from "~/lib/utils";
  * screen. That was the precondition for `onWire` below, and it is why the
  * picture is now the wiring surface rather than a report of one.
  *
- * `alerts` holds the graph edge ids the linter reported, and is the *only*
- * thing drawn in the danger colour. The diagram does not decide on its own what
- * looks wrong: a return path under the picture is a routing fact, and plenty of
- * correct wiring produces one — the room feeding a mic, the send back to a
- * remote participant. Colouring those red trains people to ignore red.
+ * `alerts` is what the linter reported, and is the *only* thing drawn in an
+ * alert colour. The diagram does not decide on its own what looks wrong: a
+ * return path under the picture is a routing fact, and plenty of correct wiring
+ * produces one — the room feeding a mic, the send back to a remote participant.
+ * Colouring those red trains people to ignore red.
+ *
+ * The linter also decides *which* alert colour, because it is the linter that
+ * knows how sure it is. A room that declares it reinforces demotes its loop to
+ * warn (§13) and the picture has to follow, or the drawing keeps asserting
+ * howling after the finding stopped — the same "red gets ignored" failure, from
+ * the other side. `SEVERITY_STROKE` is `LintPanel`'s `SEVERITY_TEXT` in stroke
+ * form, deliberately: one vocabulary, three surfaces. Its `info` entry is the
+ * ordinary cable colour, which is why an info-only finding leaves a cable alone
+ * rather than being dropped — 情報 is drawn in the colour 情報 already has.
  *
  * Three things are stacked behind the cables, and they say different things on
  * purpose: a **band** is a tint with no border and means a role, a **frame** is
@@ -64,6 +75,43 @@ const EDGE_DASH: Record<string, string | undefined> = {
   space: "6 4",
 };
 
+/**
+ * What the linter reported, keyed by the two things a line can be.
+ *
+ * Two maps rather than one because the picture holds two kinds of line and the
+ * findings name them differently: a cycle rule hands back `GraphEdge`s, and a
+ * per-cable rule hands back the document's `linkId` — which is the only handle
+ * it has, since `level-mismatch` is a fact about a cable and not about a path.
+ * A space edge collapses several graph edges into one line, which is why the
+ * first is matched on `LayoutEdge.sourceIds` and never on `id`.
+ */
+export type DiagramAlerts = {
+  byEdge: ReadonlyMap<string, Severity>;
+  byLink: ReadonlyMap<string, Severity>;
+};
+
+/** `LintPanel`'s `SEVERITY_TEXT`, as a stroke. Same four colours, same meaning. */
+const SEVERITY_STROKE: Record<Severity, string> = {
+  critical: "stroke-destructive",
+  error: "stroke-destructive",
+  warn: "stroke-amber-500",
+  info: "stroke-muted-foreground",
+};
+
+/**
+ * One marker per alert colour. Two rather than `context-stroke`, which browsers
+ * disagree about — so a third colour costs a third marker.
+ */
+const SEVERITY_MARKER: Record<Severity, string> = {
+  critical: "url(#flow-arrow-alert)",
+  error: "url(#flow-arrow-alert)",
+  warn: "url(#flow-arrow-warn)",
+  info: "url(#flow-arrow)",
+};
+
+/** Painted last, so the worst finding is never under a milder one. */
+const PAINT_ORDER: Severity[] = ["info", "warn", "error", "critical"];
+
 const CORNER = 7;
 
 /** The caption strip of a place frame — the only part of it that is clickable. */
@@ -87,12 +135,13 @@ export function SignalFlowDiagram({
   onWire,
 }: Readonly<{
   layout: Layout;
-  alerts?: ReadonlySet<string>;
+  alerts?: DiagramAlerts;
   /**
    * Graph edge ids to keep lit while everything else fades. Hovering a finding
    * in the dock passes that one loop, which is how a picture holding several
    * reported cycles can still show which one the row is talking about — the
-   * danger colour alone cannot, because every reported cycle wears it.
+   * alert colour alone cannot, because two loops of one severity wear the same
+   * one.
    */
   highlight?: ReadonlySet<string> | null;
   /** Zoom. The picture scales; it never moves — the document has no coordinates. */
@@ -110,8 +159,14 @@ export function SignalFlowDiagram({
   onWire?: (from: PortEnd, to: PortEnd) => void;
 }>) {
   const [focus, setFocus] = useState<string | null>(null);
-  const alerted = layout.edges.filter((edge) => isAlerted(edge, alerts));
-  const quiet = layout.edges.filter((edge) => !isAlerted(edge, alerts));
+  const severityOf = (edge: LayoutEdge) => alertSeverity(edge, alerts);
+  const alerted = layout.edges
+    .flatMap((edge) => {
+      const severity = severityOf(edge);
+      return severity ? [{ edge, severity }] : [];
+    })
+    .sort((a, b) => PAINT_ORDER.indexOf(a.severity) - PAINT_ORDER.indexOf(b.severity));
+  const quiet = layout.edges.filter((edge) => severityOf(edge) === null);
   const lit = litNodes(layout, highlight);
 
   const svg = useRef<SVGSVGElement>(null);
@@ -186,6 +241,17 @@ export function SignalFlowDiagram({
         >
           <path d="M0,0 L8,4 L0,8 z" className="fill-destructive" />
         </marker>
+        <marker
+          id="flow-arrow-warn"
+          viewBox="0 0 8 8"
+          refX="7"
+          refY="4"
+          markerWidth="6"
+          markerHeight="6"
+          orient="auto-start-reverse"
+        >
+          <path d="M0,0 L8,4 L0,8 z" className="fill-amber-500" />
+        </marker>
       </defs>
 
       {layout.bands.map((band) => (
@@ -210,7 +276,7 @@ export function SignalFlowDiagram({
                 key={edge.id}
                 edge={edge}
                 dimmed={isDimmed(edge, focus) || isFaded(edge, highlight)}
-                alerted={false}
+                alert={null}
               />
             ))}
           {layout.nodes
@@ -232,12 +298,12 @@ export function SignalFlowDiagram({
       ))}
 
       {/* Last, so what the linter reported is never buried under a halo or a box. */}
-      {alerted.map((edge) => (
+      {alerted.map(({ edge, severity }) => (
         <Cable
           key={edge.id}
           edge={edge}
           dimmed={isDimmed(edge, focus) || isFaded(edge, highlight)}
-          alerted={true}
+          alert={severity}
         />
       ))}
 
@@ -515,22 +581,43 @@ function isDimmed(edge: LayoutEdge, focus: string | null): boolean {
   return focus !== null && edge.from !== focus && edge.to !== focus;
 }
 
-function isAlerted(edge: LayoutEdge, alerts: ReadonlySet<string> | undefined): boolean {
-  return alerts !== undefined && edge.sourceIds.some((id) => alerts.has(id));
+/**
+ * How loudly this line should be drawn, or `null` for an ordinary cable.
+ *
+ * A line can be reported twice over — a cable on a reported loop that also has
+ * the wrong connector — so the worst wins, exactly as the tree's dots do.
+ *
+ * `info` comes back as `null` on purpose rather than as a colour: the panel
+ * draws 情報 in `text-muted-foreground`, which is already what an unreported
+ * cable is drawn in, so there is nothing to change and lifting the line into the
+ * alert layer would say more than the finding does.
+ */
+function alertSeverity(edge: LayoutEdge, alerts: DiagramAlerts | undefined): Severity | null {
+  if (!alerts) return null;
+  let worst: Severity | undefined;
+  for (const id of edge.sourceIds) {
+    const severity = alerts.byEdge.get(id);
+    if (severity) worst = worse(worst, severity);
+  }
+  const onLink = edge.linkId ? alerts.byLink.get(edge.linkId) : undefined;
+  if (onLink) worst = worse(worst, onLink);
+  return worst === undefined || worst === "info" ? null : worst;
 }
 
 function Cable({
   edge,
   dimmed,
-  alerted,
-}: Readonly<{ edge: LayoutEdge; dimmed: boolean; alerted: boolean }>) {
+  alert,
+}: Readonly<{ edge: LayoutEdge; dimmed: boolean; alert: Severity | null }>) {
   const d = roundedPath(edge.points);
-  const width = cableWidth(edge, alerted);
+  const width = cableWidth(edge, alert);
   return (
     <g
       data-edge-id={edge.id}
       data-link-id={edge.linkId ?? undefined}
-      data-alerted={alerted ? "" : undefined}
+      // The severity rather than a bare flag, so a test can tell "the linter
+      // reported this" from "the linter reported this as howling".
+      data-alerted={alert ?? undefined}
       opacity={dimmed ? 0.15 : 1}
     >
       {/* Laid under the cable so a crossing still reads as a crossing. */}
@@ -542,21 +629,21 @@ function Cable({
         strokeDasharray={EDGE_DASH[edge.kind]}
         strokeLinejoin="round"
         strokeLinecap="round"
-        markerEnd={alerted ? "url(#flow-arrow-alert)" : "url(#flow-arrow)"}
-        className={cableStroke(edge, alerted)}
+        markerEnd={alert ? SEVERITY_MARKER[alert] : "url(#flow-arrow)"}
+        className={cableStroke(edge, alert)}
       />
     </g>
   );
 }
 
-function cableWidth(edge: LayoutEdge, alerted: boolean): number {
-  if (alerted) return 2;
+function cableWidth(edge: LayoutEdge, alert: Severity | null): number {
+  if (alert) return 2;
   return edge.kind === "space" ? 1.5 : 1.2;
 }
 
-/** A return path recedes; only what the linter reported is loud. */
-function cableStroke(edge: LayoutEdge, alerted: boolean): string {
-  if (alerted) return "stroke-destructive";
+/** A return path recedes; only what the linter reported is loud, and only as loud as it said. */
+function cableStroke(edge: LayoutEdge, alert: Severity | null): string {
+  if (alert) return SEVERITY_STROKE[alert];
   return edge.back ? "stroke-muted-foreground/55" : "stroke-muted-foreground";
 }
 

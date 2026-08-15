@@ -543,13 +543,36 @@ inside one box and the routing matrix is the honest view of it. `space` is not a
 collapses to one edge per box pair and anchors on the box, not on a jack; that is what keeps a
 room from growing a fan of lines. `cable` and `host` draw one line per link.
 
-**The danger colour belongs to the linter, not to the layout.** The diagram draws in red only the
-graph edges passed in as `alerts`, which the route builds from `Diagnostic.cycle`. Being routed
-in the return lane is a fact about ranking, not a fault: the room feeding a mic and the send back
-to a remote participant are both correct wiring and both take that lane, so colouring the lane
-red trains people to ignore red. `LayoutEdge.sourceIds` exists for this — room coupling collapses
+**The alert colour belongs to the linter, not to the layout — and so does which colour.** The
+diagram draws loudly only what is passed in as `alerts`. Being routed in the return lane is a
+fact about ranking, not a fault: the room feeding a mic and the send back to a remote participant
+are both correct wiring and both take that lane, so colouring the lane red trains people to
+ignore red.
+
+Painting every finding red trains exactly the same reflex, which is what the first version did —
+it flattened `Diagnostic.cycle` into a set of edge ids and lost the severity on the way. A room
+that declares it reinforces demotes its loop to warn (§13), and the drawing went on asserting
+the howling the linter had just stopped asserting; `visual-feedback-loop` and
+`aec-reference-missing` are warn unconditionally and were red from the day they were written. So
+`alerts` is now two maps out of `worstSeverities`, and `SEVERITY_STROKE` is `LintPanel`'s
+`SEVERITY_TEXT` in stroke form — one vocabulary across the dock, the tree's dots and the picture.
+Worst wins per line, because a cable carries several findings and a graph edge lies on several
+cycles. `info` maps to the ordinary cable colour, which is why an info-only finding leaves the
+line alone rather than being dropped: 情報 is already drawn in the colour 情報 has.
+
+The two maps are keyed differently because findings name lines in two ways. `byEdge` holds
+`GraphEdge` ids from `cycle` and is matched on `LayoutEdge.sourceIds` — room coupling collapses
 several graph edges into one line, and matching on `id` alone would draw a reported loop as
-innocent.
+innocent. `byLink` holds document link ids from `Diagnostic.linkIds` and is matched on
+`LayoutEdge.linkId`; a per-cable rule has no path to hand back, so before it existed
+`level-mismatch` — "スピーカー出力を…接続しています。機材が破損します" — was an ordinary grey
+line while a deliberate, declared reinforcement loop was bright red.
+
+Two gaps remain, both deliberate for now. A finding that names only a node (`no-audio-to-stream`
+is critical and names one) reaches the tree's dots and not the picture; putting it on a box needs
+a fourth shape, and §10.5 says three shapes say three things. And a link the graph rejects
+outright — `bad-link-direction`, `link-media-mismatch` — produces no edge at all, so no amount of
+colouring can show it; drawing it would mean the layout carrying links `buildLinkEdges` refused.
 
 Diagonals only ever occur in the gap between two columns, and a gap holds no boxes — that
 invariant is what the "routes clear of the boxes" test checks by sampling along each segment.

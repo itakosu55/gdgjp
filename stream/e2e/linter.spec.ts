@@ -75,6 +75,25 @@ test.describe("reinforced spaces", () => {
     await expect(found.locator("[data-fix-kind='declare-reinforced']")).toHaveCount(1);
   });
 
+  /**
+   * The demotion has to reach the drawing, not only the dock. A picture that
+   * keeps the loop red is the picture asserting the howling the linter just
+   * stopped asserting — and a red that correct wiring cannot clear is exactly
+   * what teaches people to ignore red.
+   */
+  test("draws the demoted loop in the warning colour, not the danger one", async ({ page }) => {
+    await page.goto(setupUrl("e2e_setup_reinforced"));
+    const diagram = page.getByRole("img", { name: "信号フロー図" });
+
+    await expect(diagram.locator('[data-alerted="warn"]').first()).toBeVisible();
+    await expect(diagram.locator('[data-alerted="critical"]')).toHaveCount(0);
+
+    // Same wiring without the declaration, so the colour is the only difference.
+    await page.goto(setupUrl("e2e_setup_howling"));
+    await expect(diagram.locator('[data-alerted="critical"]').first()).toBeVisible();
+    await expect(diagram.locator('[data-alerted="warn"]')).toHaveCount(0);
+  });
+
   // The whole point of the flag is that a person puts it there. Nothing else
   // covers the checkbox reaching the document.
   test("ticking the box in the inspector moves the finding", async ({ page }) => {

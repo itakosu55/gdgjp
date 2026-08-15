@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { MODELS } from "~/lib/av/fixtures";
+import { MODELS, testContext } from "~/lib/av/fixtures";
+import { lint } from "~/lib/av/lint";
 import type { SetupDoc } from "~/lib/av/schema";
-import { collectPlaces, locationOptions, locationValue } from "~/lib/setup-view";
+import { collectPlaces, locationOptions, locationValue, worstSeverities } from "~/lib/setup-view";
 
 function doc(partial: Partial<SetupDoc> = {}): SetupDoc {
   return { schemaVersion: 1, spaces: [], nodes: [], links: [], routing: [], ...partial };
@@ -102,5 +103,91 @@ describe("the 所在 list", () => {
       expect(locationValue(both, { id: "n1" })).toBe("");
       expect(locationValue(both, { id: "n1", spaceId: "sp_deleted" })).toBe("");
     });
+  });
+});
+
+/**
+ * What the diagram is allowed to paint, and how loudly.
+ *
+ * `byEdge` and `byLink` are the picture's whole input, so these tests are the
+ * unit-level statement of one rule: the linter decides the colour. The diagram
+ * used to flatten every reported cycle into one danger colour, which meant a
+ * room that declared it reinforces got a 警告 in the dock and a red loop in the
+ * drawing — the picture still asserting the howling the linter had stopped
+ * asserting (§13).
+ */
+describe("worstSeverities", () => {
+  const HALL = { id: "sp_hall", kind: "acoustic", label: "メインホール" } as const;
+  const nodes = [
+    { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+    { id: "n_mixer", deviceId: "d_mixer" },
+    { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+  ];
+  const links = [
+    { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+    { id: "l2", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+  ] satisfies SetupDoc["links"];
+
+  function howling(reinforced: boolean) {
+    return worstSeverities(
+      lint(
+        doc({
+          spaces: [{ ...HALL, reinforced }],
+          nodes,
+          links,
+          routing: [{ nodeId: "n_mixer", inPort: "ch1", bus: "main" }],
+        }),
+        testContext(),
+      ),
+    );
+  }
+
+  // Same wiring both ways round, so this pins that the declaration — and only
+  // the declaration — is what moves the colour.
+  it("hands the diagram the severity the dock shows, not a flat alert", () => {
+    const declared = [...howling(true).byEdge.values()];
+    const undeclared = [...howling(false).byEdge.values()];
+
+    expect(declared.length).toBeGreaterThan(0);
+    expect(declared).toContain("warn");
+    expect(declared).not.toContain("critical");
+    expect(undeclared).toContain("critical");
+  });
+
+  /**
+   * A cable is named by `linkIds`, never by a cycle, so before `byLink` existed
+   * every per-cable rule drew nothing at all — a mic run straight into a
+   * powered speaker was an ordinary grey line while a declared, deliberate
+   * reinforcement loop was bright red.
+   */
+  it("carries a finding that names a cable rather than a path", () => {
+    const found = worstSeverities(
+      lint(
+        doc({
+          // Neither end stands in a room, so nothing here closes a loop and the
+          // only findings left on the cable are the ones about the cable.
+          nodes: [
+            { id: "n_mic", deviceId: "d_mic1" },
+            { id: "n_speaker", deviceId: "d_speaker" },
+          ],
+          links: [{ id: "l_direct", from: ["n_mic", "out"], to: ["n_speaker", "in"] }],
+        }),
+        testContext(),
+      ),
+    );
+
+    // Two findings on one cable — mic level into a line input, and XLR into TRS.
+    // The louder one is what the line is drawn as.
+    expect(found.byEdge.size).toBe(0);
+    expect(found.byLink.get("l_direct")).toBe("error");
+  });
+
+  it("leaves a cable nobody reported out of both maps", () => {
+    const found = worstSeverities(
+      lint(doc({ spaces: [HALL], nodes, links, routing: [] }), testContext()),
+    );
+
+    expect(found.byLink.has("l1")).toBe(false);
+    expect(found.byEdge.size).toBe(0);
   });
 });

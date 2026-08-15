@@ -256,9 +256,18 @@ component draws the `points` it is handed and owns no geometry.
 - Edge kinds differ on purpose: `internal` is not drawn (the routing matrix is the honest view),
   `space` collapses to one edge per box pair anchored on the box, `cable` and `host` draw one line
   per link.
-- **The danger colour belongs to the linter.** Only the edges passed in as `alerts` (built from
-  `Diagnostic.cycle`) are red — being routed in the return lane is correct wiring, and colouring the
-  lane trains people to ignore red. Match on `LayoutEdge.sourceIds`, not `id`.
+- **The alert colour belongs to the linter, and so does which colour.** `alerts` is
+  `worstSeverities`' `byEdge` (from `Diagnostic.cycle`, matched on `LayoutEdge.sourceIds`, never
+  `id`) and `byLink` (from `Diagnostic.linkIds`, matched on `LayoutEdge.linkId`, so `level-mismatch`
+  and the other per-cable rules are drawn too). Worst wins per line. `SEVERITY_STROKE` is
+  `LintPanel`'s `SEVERITY_TEXT` in stroke form — a reinforced room's loop is amber in both, and
+  `info` is the ordinary cable colour, so an info-only finding leaves the line alone. Being routed
+  in the return lane is correct wiring and colouring the lane trains people to ignore red; so does
+  painting a finding the dock calls 警告 as though it were 重大.
+- **A finding that names only a node is the tree's dots, not the picture** — including critical
+  ones like `no-audio-to-stream`. Putting it on a box needs a fourth shape and §10.5 gives three.
+  A link the graph rejects (`bad-link-direction`, `link-media-mismatch`) has no edge at all, so it
+  is drawn nowhere; both gaps are open on purpose.
 - A room's two shapes select the same room, so they must not share an accessible name; only the
   frame's caption strip is clickable.
 - **Ranking never follows an edge out of a space.** A room is where signal leaves the cables, so it

@@ -177,17 +177,30 @@ export function worse(a: Severity | undefined, b: Severity): Severity {
 }
 
 /**
- * Worst finding per node and per space, for the dots in the tree.
+ * Worst finding per thing a surface can point at, in one pass.
  *
- * The dot is what ties the dock to the tree: a finding names a path, and the
- * tree is where you go to act on one end of it.
+ * The tree reads `byNode` / `bySpace` for its dots; the diagram reads `byEdge` /
+ * `byLink` for the danger colour. One implementation because the two surfaces
+ * have to agree about severity — a finding the dock calls 警告 and the picture
+ * paints red is the picture asserting what the linter stopped asserting, and
+ * §13 exists precisely to stop that (a room that declares it reinforces demotes
+ * `acoustic-feedback-loop` to warn).
+ *
+ * Worst wins everywhere, and it has to: one cable carries several findings, and
+ * one graph edge lies on several reported cycles.
  */
 export function worstSeverities(diagnostics: readonly Diagnostic[]): {
   byNode: Map<string, Severity>;
   bySpace: Map<string, Severity>;
+  /** Keyed by `GraphEdge.id`, which the diagram matches on `LayoutEdge.sourceIds`. */
+  byEdge: Map<string, Severity>;
+  /** Keyed by `SetupLink.id`, which the diagram matches on `LayoutEdge.linkId`. */
+  byLink: Map<string, Severity>;
 } {
   const byNode = new Map<string, Severity>();
   const bySpace = new Map<string, Severity>();
+  const byEdge = new Map<string, Severity>();
+  const byLink = new Map<string, Severity>();
   for (const diagnostic of diagnostics) {
     for (const nodeId of diagnostic.nodeIds) {
       byNode.set(nodeId, worse(byNode.get(nodeId), diagnostic.severity));
@@ -195,6 +208,12 @@ export function worstSeverities(diagnostics: readonly Diagnostic[]): {
     for (const spaceId of diagnostic.spaceIds ?? []) {
       bySpace.set(spaceId, worse(bySpace.get(spaceId), diagnostic.severity));
     }
+    for (const edge of diagnostic.cycle ?? []) {
+      byEdge.set(edge.id, worse(byEdge.get(edge.id), diagnostic.severity));
+    }
+    for (const linkId of diagnostic.linkIds) {
+      byLink.set(linkId, worse(byLink.get(linkId), diagnostic.severity));
+    }
   }
-  return { byNode, bySpace };
+  return { byNode, bySpace, byEdge, byLink };
 }

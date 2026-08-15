@@ -219,11 +219,10 @@ export default function SetupEditorPage({ loaderData, actionData }: Route.Compon
   const enabled = new Set(
     doc.routing.map((route) => `${route.nodeId}::${route.inPort}::${route.bus}`),
   );
-  // The only thing the diagram draws in the danger colour. Routing facts — a
-  // return path under the picture — are not faults and must not borrow red.
-  const alerts = new Set(
-    diagnostics.flatMap((diagnostic) => (diagnostic.cycle ?? []).map((edge) => edge.id)),
-  );
+  // The only thing the diagram draws in an alert colour, and how loudly. Routing
+  // facts — a return path under the picture — are not faults and must not borrow
+  // red; nor may a finding the dock calls 警告 be painted as one.
+  const alerts = { byEdge: severities.byEdge, byLink: severities.byLink };
 
   // Clicking a row on a phone has to get the drawer out of the way; on a wide
   // screen `auto` is exactly where the panel already was, so the same call does
