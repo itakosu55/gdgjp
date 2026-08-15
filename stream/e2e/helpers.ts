@@ -15,7 +15,7 @@ export function diagnostic(page: Page, ruleId: string) {
 /** The left panel's "+". Adding gear and rooms lives behind it now. */
 export async function openAddPanel(page: Page): Promise<void> {
   await page.getByRole("button", { name: "機材と空間を追加" }).click();
-  await expect(page.locator("#spaceLabel")).toBeVisible();
+  await expect(page.locator("#placeLabel")).toBeVisible();
 }
 
 /** A form scoped by one of its own controls, so a bare "追加" stays unambiguous. */

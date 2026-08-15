@@ -299,6 +299,25 @@ only shows up on the next reload.
 `rename-setup` and `delete-setup` return `elsewhere`: they are columns on the `setups` row, not
 edits to the document, so only the server can perform them.
 
+**A room is added as a room.** The form used to ask for one space at a time — a name, a 種別, and a
+hand-typed `venueKey`, a field whose entire purpose is to say "these two are the same room".
+Nobody setting up an event thinks of a hall as two things, so either the pair was never made or
+the key was mistyped, and both draw one room twice in a picture whose whole job is to show what
+shares a room. Ordering the halves canonically (above) made them sit together once they existed,
+which only sharpened the question of why anyone had to pair them by hand at all. So `add-place`
+asks the question people can actually answer — is there sound in it, is there a picture — and
+mints one space per medium ticked. The key falls out of the first minted id: unique among ids by
+construction, and the very value `placeKeyOf` falls back to for a space that carries none, so a
+room of one medium is written exactly as `add-space` wrote it and is still a place. A typed key
+wins, because that is the §8 cross-track case, where the point is to match a name another
+document already uses.
+
+The checkboxes come from `PLACE_KINDS` (`av/places.ts`), derived as `SPACE_KINDS` minus
+`transport` rather than written out, so "a meeting is not a place" stays the one rule `placeKeyOf`
+states — and reading the submission back through that list is also what puts air before sight in
+the document, whichever box the browser posted first. `add-space` survives as the primitive, and
+is what the ミーティング form posts with `kind` fixed to `transport`.
+
 Four regions, not five tabs: `setup-tree.tsx` on the left (所在 → 機械 → アプリ, mirroring the
 diagram's box-in-box), the work surface in the middle, `setup-inspector.tsx` on the right, and
 the linter as a dock across the middle column only, so neither panel loses its height.

@@ -27,14 +27,17 @@ test.describe("building a setup from scratch", () => {
 
   const url = setupUrl("e2e_setup_editing");
 
-  test("a space can be added", async ({ page }) => {
+  // Sound only, because the rest of this group wires a mic and a mixer and
+  // nothing in it is seen. A room with both media is asserted on where it
+  // matters — that the two halves come out as one place — in the unit tests.
+  test("a room can be added", async ({ page }) => {
     await page.goto(url);
     await openAddPanel(page);
 
-    await page.locator("#spaceLabel").fill("E2E メインホール");
-    await page.locator("#spaceKind").selectOption("acoustic");
+    await page.locator("#placeLabel").fill("E2E メインホール");
+    await page.locator("#place-visual").uncheck();
     await saving(page, () =>
-      formWith(page, "#spaceLabel").getByRole("button", { name: "追加" }).click(),
+      formWith(page, "#placeLabel").getByRole("button", { name: "追加" }).click(),
     );
 
     // The room becomes a group in the tree, exactly as it becomes a frame in

@@ -25,6 +25,20 @@ export function placeKeyOf(space: Space): string | null {
 }
 
 /**
+ * The media a place can be made of, in the order a place lists them.
+ *
+ * Derived rather than written out, so "a meeting is not a place" stays the one
+ * rule `placeKeyOf` states above: a room form that spelled its own list would
+ * be free to drift from it, and offering 伝送 as something a room *has* is
+ * exactly the nonsense the key rule exists to refuse.
+ */
+export type PlaceKind = Exclude<SpaceKind, "transport">;
+
+export const PLACE_KINDS: readonly PlaceKind[] = SPACE_KINDS.filter(
+  (kind): kind is PlaceKind => kind !== "transport",
+);
+
+/**
  * Where a space sits among the spaces of its own place: air first, then sight.
  *
  * Which half of a room somebody happened to create first is not something a

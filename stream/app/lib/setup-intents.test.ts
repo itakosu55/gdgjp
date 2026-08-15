@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEVICES, MODELS, OBS_SOURCES } from "~/lib/av/fixtures";
-import type { SetupDoc } from "~/lib/av/schema";
+import { placeKeyOf } from "~/lib/av/places";
+import type { SetupDoc, Space } from "~/lib/av/schema";
 import type { IntentCatalog } from "~/lib/setup-intents";
 import { applyIntent, isOptimistic } from "~/lib/setup-intents";
 
@@ -20,25 +21,114 @@ function doc(partial: Partial<SetupDoc> = {}): SetupDoc {
   return { schemaVersion: 1, spaces: [], nodes: [], links: [], routing: [], ...partial };
 }
 
-function form(fields: Record<string, string>): FormData {
+/** A list stands for a control that sends the same name more than once. */
+type Fields = Record<string, string | string[]>;
+
+function form(fields: Fields): FormData {
   const data = new FormData();
-  for (const [key, value] of Object.entries(fields)) data.append(key, value);
+  for (const [key, value] of Object.entries(fields)) {
+    for (const one of Array.isArray(value) ? value : [value]) data.append(key, one);
+  }
   return data;
 }
 
-function applied(base: SetupDoc, fields: Record<string, string>): SetupDoc {
+function applied(base: SetupDoc, fields: Fields): SetupDoc {
   const outcome = applyIntent(base, form(fields), catalog);
   if (outcome.kind !== "doc") throw new Error(`expected a document, got ${outcome.kind}`);
   return outcome.doc;
 }
 
-function failed(base: SetupDoc, fields: Record<string, string>): string {
+function failed(base: SetupDoc, fields: Fields): string {
   const outcome = applyIntent(base, form(fields), catalog);
   if (outcome.kind !== "error") throw new Error(`expected an error, got ${outcome.kind}`);
   return outcome.error;
 }
 
 describe("applyIntent", () => {
+  /**
+   * A room is what someone registers; the spaces are how the graph holds it.
+   * The claim these make is that one act produces one *place* — which is the
+   * thing `placeKeyOf` derives, and the thing the diagram frames and the tree
+   * groups by — without anyone having had to think about `venueKey`.
+   */
+  describe("adding a room", () => {
+    it("makes the two media of one room agree that they are one room", () => {
+      const spaces = applied(doc(), {
+        intent: "add-place",
+        label: "メインホール",
+        media: ["acoustic", "visual"],
+      }).spaces;
+
+      expect(spaces.map((space) => space.kind)).toEqual(["acoustic", "visual"]);
+      expect(spaces.every((space) => space.label === "メインホール")).toBe(true);
+      expect(placeKeyOf(spaces[0] as Space)).toBe(placeKeyOf(spaces[1] as Space));
+    });
+
+    // The checkboxes are read through `PLACE_KINDS`, so the document comes out
+    // in the order everything else lists a place's spaces in — and the room's
+    // caption comes from its air whichever box the browser posted first.
+    it("puts air before sight whichever order the boxes arrived in", () => {
+      const spaces = applied(doc(), {
+        intent: "add-place",
+        label: "メインホール",
+        media: ["visual", "acoustic"],
+      }).spaces;
+
+      expect(spaces.map((space) => space.kind)).toEqual(["acoustic", "visual"]);
+    });
+
+    // `placeKeyOf` falls back to the id, so a room of one medium needs no key —
+    // and this is exactly what `add-space` has always written.
+    it("leaves a room of one medium without a key", () => {
+      const spaces = applied(doc(), {
+        intent: "add-place",
+        label: "サテライト",
+        media: "acoustic",
+      }).spaces;
+
+      expect(spaces).toEqual([{ id: "sp1", kind: "acoustic", label: "サテライト" }]);
+    });
+
+    // §8: the point of typing one is to match a name another document uses.
+    it("prefers a key that was typed in", () => {
+      const spaces = applied(doc(), {
+        intent: "add-place",
+        label: "メインホール",
+        media: ["acoustic", "visual"],
+        venueKey: "hall-a",
+      }).spaces;
+
+      expect(spaces.map((space) => space.venueKey)).toEqual(["hall-a", "hall-a"]);
+    });
+
+    it("numbers the new spaces from the ids already taken", () => {
+      const base = doc({ spaces: [{ id: "sp1", kind: "transport", label: "Meet" }] });
+      const spaces = applied(base, {
+        intent: "add-place",
+        label: "メインホール",
+        media: ["acoustic", "visual"],
+      }).spaces;
+
+      expect(spaces.map((space) => space.id)).toEqual(["sp1", "sp2", "sp3"]);
+      expect(spaces[1]?.venueKey).toBe("sp2");
+    });
+
+    it("refuses a room that is neither heard nor seen", () => {
+      expect(failed(doc(), { intent: "add-place", label: "メインホール" })).toContain("音か画");
+    });
+
+    // A meeting is not a place, and the room form is not the way to make one.
+    it("refuses to take a meeting as one of a room's media", () => {
+      expect(
+        failed(doc(), { intent: "add-place", label: "メインホール", media: "transport" }),
+      ).toContain("音か画");
+    });
+
+    it("refuses a room with no name", () => {
+      expect(failed(doc(), { intent: "add-place", media: "acoustic" })).toContain("名前");
+    });
+  });
+
   describe("declaring that a room is reinforced", () => {
     const hall = {
       id: "sp1",
@@ -371,7 +461,14 @@ describe("applyIntent", () => {
 
 describe("isOptimistic", () => {
   it("covers every document edit", () => {
-    const intents = ["add-node", "update-node", "add-link", "toggle-route", "apply-fix"];
+    const intents = [
+      "add-place",
+      "add-node",
+      "update-node",
+      "add-link",
+      "toggle-route",
+      "apply-fix",
+    ];
     for (const intent of [...intents, "add-source", "remove-source", "rename-source"]) {
       expect(isOptimistic(intent)).toBe(true);
     }

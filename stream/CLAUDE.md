@@ -187,6 +187,13 @@ One route, one action, dispatched on a hidden `intent`. Every write goes `applyO
   browser against its own copy while the request is in the air. Never re-derive an intent's effect
   anywhere else. `rename-setup` / `delete-setup` return `elsewhere`: they are columns, not document
   edits.
+- **A room is added as a room, not a space at a time.** `add-place` mints one space per medium the
+  form ticked and gives a pair the same `venueKey` — the first minted id, which is what `placeKeyOf`
+  falls back to anyway, so a room of one medium carries no key at all and is written exactly as
+  `add-space` writes it. The checkboxes come from `PLACE_KINDS` (`av/places.ts`), derived from "a
+  meeting is not a place" rather than spelled out, and reading the submission back through that
+  list is also what puts air before sight in the document. A typed `venueKey` still wins — that is
+  the §8 cross-track case. `add-space` stays the primitive, and is what the ミーティング form posts.
 - State lives in the URL — `?view=diagram|routing|cables|json`, `?sel=<nodeId> | space:<spaceId> |
   setup` — because forms post to the current URL.
 - Four regions: `setup-tree.tsx`, the centre pane (`setup-views.tsx`), `setup-inspector.tsx`, and

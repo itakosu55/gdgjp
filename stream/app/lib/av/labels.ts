@@ -1,3 +1,4 @@
+import type { PlaceKind } from "./places";
 import type {
   ConnectorKind,
   CouplingDirection,
@@ -84,6 +85,19 @@ export const SPACE_KIND_LABELS: Record<SpaceKind, string> = {
   acoustic: "音響空間 (スピーカー → 空気 → マイク)",
   visual: "視覚空間 (スクリーン → 視界 → カメラ)",
   transport: "伝送空間 (join → ミーティング → 他の join)",
+};
+
+/**
+ * What a *room* has, for the form that creates one.
+ *
+ * Not `SPACE_KIND_LABELS` with the parenthetical dropped: that one names the
+ * spaces from the graph's side, and a space is a modelling detail. Someone
+ * registering a hall knows whether there is sound in it and whether there is a
+ * picture; that the two are separate vertices is the app's business.
+ */
+export const PLACE_MEDIA_LABELS: Record<PlaceKind, string> = {
+  acoustic: "音がある",
+  visual: "画がある",
 };
 
 /** The one-word form used in lists, where the parenthetical would not fit. */

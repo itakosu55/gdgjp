@@ -1,8 +1,9 @@
 import type { Fix } from "~/lib/av/diagnostics";
 import type { CatalogLookup } from "~/lib/av/graph";
 import { applyFix, applyOperation, defaultRoutesFor, sourceRoutes } from "~/lib/av/mutations";
+import { PLACE_KINDS } from "~/lib/av/places";
 import { initialPorts, newSource, resolvePorts } from "~/lib/av/ports";
-import type { PortRef, SetupDoc } from "~/lib/av/schema";
+import type { PortRef, SetupDoc, Space } from "~/lib/av/schema";
 import { safeParseSetupDoc } from "~/lib/av/schema";
 import type { DeviceModel, SpaceKind } from "~/lib/av/types";
 import { SPACE_KINDS } from "~/lib/av/types";
@@ -48,6 +49,7 @@ export type IntentOutcome =
  * it locally would reformat the textarea under whoever is still typing in it.
  */
 const OPTIMISTIC = new Set([
+  "add-place",
   "add-space",
   "remove-space",
   "update-space",
@@ -103,6 +105,61 @@ export function applyIntent(doc: SetupDoc, form: FormData, catalog: IntentCatalo
               : {}),
           },
         }),
+      );
+    }
+
+    /**
+     * A room and the media in it, in one act.
+     *
+     * A place is derived and never declared — `placeKeyOf` reads it off the
+     * spaces — so a hall that has both sound and a picture is two spaces that
+     * agree on a `venueKey`. Asking for that agreement one space at a time made
+     * the pair a piece of bookkeeping, and the whole point of `venueKey` is that
+     * it is not something anyone should have to think about: a mistyped key
+     * draws one room as two, in a picture whose entire job is to show what
+     * shares a room. So the form asks the question people can answer — is there
+     * sound in it, is there a picture — and the key falls out.
+     */
+    case "add-place": {
+      const label = text(form.get("label"));
+      if (!label) return { kind: "error", error: "部屋の名前は必須です。" };
+
+      // Filtered through `PLACE_KINDS` rather than read off the form, so the
+      // spaces come out in the canonical order and a posted `transport` cannot
+      // smuggle a meeting in as one of a room's media.
+      const chosen = new Set(form.getAll("media").map((value) => text(value)));
+      const kinds = PLACE_KINDS.filter((kind) => chosen.has(kind));
+      if (kinds.length === 0) return { kind: "error", error: "音か画のどちらかは必要です。" };
+
+      const spaces: Space[] = [];
+      for (const kind of kinds) {
+        const id = newDocId("sp", [
+          ...doc.spaces.map((space) => space.id),
+          ...spaces.map((space) => space.id),
+        ]);
+        spaces.push({ id, kind, label });
+      }
+
+      // Two halves need a key to agree on, and the first id serves: it is
+      // unique among ids by construction, and it is the very value `placeKeyOf`
+      // falls back to for a space that carries no key at all. So a room of one
+      // medium is written exactly the way `add-space` writes it — no key — and
+      // stays a room the moment someone gives it its other half. A typed key
+      // wins, because that is the §8 cross-track case, where the point is to
+      // match a name another document already uses.
+      const venueKey =
+        (emptyToNull(form.get("venueKey")) ? text(form.get("venueKey")) : null) ??
+        (spaces.length > 1 ? spaces[0]?.id : undefined);
+
+      return ok(
+        spaces.reduce(
+          (next, space) =>
+            applyOperation(next, {
+              kind: "add-space",
+              space: { ...space, ...(venueKey ? { venueKey } : {}) },
+            }),
+          doc,
+        ),
       );
     }
 

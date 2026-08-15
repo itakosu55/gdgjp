@@ -4,7 +4,8 @@ import { SetupForm } from "~/components/setup-form";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Textarea } from "~/components/ui/textarea";
-import { SPACE_KIND_LABELS, entries } from "~/lib/av/labels";
+import { PLACE_MEDIA_LABELS } from "~/lib/av/labels";
+import { PLACE_KINDS } from "~/lib/av/places";
 import type { SetupDoc, SetupLink } from "~/lib/av/schema";
 import type { DeviceModel } from "~/lib/av/types";
 import type { NodeInfo } from "~/lib/setup-view";
@@ -415,41 +416,85 @@ export function AddPanel({
         )}
       </section>
 
+      {/*
+       * A room, not a space. The document keeps a hall's air and its sightline
+       * apart because the graph needs them apart, but nobody setting up an
+       * event thinks of a hall as two things — and asking for them one at a
+       * time meant hand-typing the key that says they are the same room, which
+       * is the one field where a typo draws the room twice.
+       */}
       <section>
         <h2 className="mb-2 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
-          空間を追加
+          部屋を追加
         </h2>
         <SetupForm className="flex flex-col gap-2">
-          <input type="hidden" name="intent" value="add-space" />
-          <Field label="名前" htmlFor="spaceLabel">
+          <input type="hidden" name="intent" value="add-place" />
+          <Field label="名前" htmlFor="placeLabel">
             <Input
-              id="spaceLabel"
+              id="placeLabel"
               name="label"
               required
               placeholder="メインホール"
               maxLength={120}
             />
           </Field>
-          <Field label="種別" htmlFor="spaceKind">
-            <select id="spaceKind" name="kind" className={selectClassName}>
-              {entries(SPACE_KIND_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <fieldset className="flex flex-col gap-1.5">
+            <legend className="mb-1.5 text-sm font-medium">この部屋にあるもの</legend>
+            {PLACE_KINDS.map((kind) => (
+              <label key={kind} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  id={`place-${kind}`}
+                  name="media"
+                  value={kind}
+                  defaultChecked
+                  className="size-3.5 accent-primary"
+                />
+                <span>{PLACE_MEDIA_LABELS[kind]}</span>
+              </label>
+            ))}
+          </fieldset>
+          <p className="text-[11px] text-muted-foreground">
+            音はスピーカーとマイクが、画はスクリーンとカメラがつながる空間になります。両方あっても 1
+            つの部屋です。
+          </p>
           <Field
             label="物理空間キー"
             htmlFor="venueKey"
-            hint="将来トラックを分けたとき、同じ部屋だと判定するための任意の識別子です。"
+            hint="将来トラックを分けたとき、別の設定の同じ部屋と突き合わせるための任意の識別子です。空欄で構いません。"
           >
             <Input id="venueKey" name="venueKey" placeholder="hall-a" maxLength={64} />
           </Field>
+          <Button type="submit" size="sm">
+            追加
+          </Button>
+        </SetupForm>
+      </section>
+
+      {/* A meeting is not a place, so it is not something a room has. */}
+      <section>
+        <h2 className="mb-2 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+          ミーティングを追加
+        </h2>
+        <SetupForm className="flex flex-col gap-2">
+          <input type="hidden" name="intent" value="add-space" />
+          <input type="hidden" name="kind" value="transport" />
+          <Field label="名前" htmlFor="meetingLabel">
+            <Input
+              id="meetingLabel"
+              name="label"
+              required
+              placeholder="Google Meet"
+              maxLength={120}
+            />
+          </Field>
+          <p className="text-[11px] text-muted-foreground">
+            会議ソフトの join が参加する場所です。機材の所在にはならず、join だけがここに入ります。
+          </p>
           <Field
             label="ミーティングキー"
             htmlFor="meetingKey"
-            hint="伝送空間のみ。将来トラックを分けたとき、同じミーティングだと判定するための任意の識別子です。"
+            hint="将来トラックを分けたとき、同じミーティングだと判定するための任意の識別子です。"
           >
             <Input id="meetingKey" name="meetingKey" placeholder="meet-abc" maxLength={64} />
           </Field>
