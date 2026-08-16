@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { OBS_SOURCES, satelliteRooms, testContext, twoJoinsInOneHall } from "./fixtures";
+import {
+  OBS_SOURCES,
+  halfSharedScreen,
+  hybridMonitorMix,
+  remoteGuestOnBuiltins,
+  satelliteRooms,
+  speakerphoneMeeting,
+  testContext,
+  twoJoinsInOneHall,
+} from "./fixtures";
 import { buildGraph } from "./graph";
-import type { LayoutNode } from "./layout";
+import type { LayoutEdge, LayoutNode } from "./layout";
 import { layoutGraph } from "./layout";
 import { lint } from "./lint";
 import type { SetupDoc } from "./schema";
@@ -222,6 +231,74 @@ describe("layoutGraph", () => {
         expect(crosses(edge.points, box)).toBe(false);
       }
     }
+  });
+
+  /**
+   * Crossing and overlapping are not the same problem. Two cables that cross
+   * read as two cables — that is what the halo under each line is for — but two
+   * drawn along the same run are one line on screen, and where they end
+   * together they are one arrowhead, so the picture quietly under-reports the
+   * wiring. A hall with two speakers and a laptop in it drew three couplings
+   * into one point.
+   */
+  describe("lines that would be drawn on top of each other", () => {
+    const rigs = {
+      twoJoinsInOneHall,
+      satelliteRooms,
+      remoteGuestOnBuiltins,
+      speakerphoneMeeting,
+      hybridMonitorMix,
+      halfSharedScreen,
+    };
+
+    for (const [name, rig] of Object.entries(rigs)) {
+      it(`draws no two lines along one another in ${name}`, () => {
+        const layout = layoutOf(rig());
+        expect(sharedRuns(layout)).toEqual([]);
+      });
+
+      it(`puts one arrowhead per line in ${name}`, () => {
+        const layout = layoutOf(rig());
+        for (const [point, edges] of endpoints(layout)) {
+          // Unless they really are the same jack — two feeds on one row is what
+          // `shared-source-strip` is a finding about, so the picture has to go
+          // on saying it.
+          const jacks = new Set(edges.map((edge) => jackOf(edge, "to")));
+          expect([point, [...jacks]]).toEqual([point, [...jacks].slice(0, 1)]);
+        }
+      });
+    }
+
+    // A room has no jacks to hang them on, so every cable used to meet it in
+    // the middle of its face.
+    it("gives every coupling into a room a row of its own", () => {
+      const layout = layoutOf(twoJoinsInOneHall());
+      const hall = nodeOf(layout, "space:sp_hall");
+      const into = layout.edges.filter((edge) => edge.to === "space:sp_hall");
+      const rows = new Set(into.map((edge) => edge.points.at(-1)?.y));
+      expect(into.length).toBeGreaterThan(1);
+      expect(rows.size).toBe(into.length);
+      // And the room is as tall as the rows it hands out.
+      for (const y of rows) {
+        expect(y).toBeGreaterThanOrEqual(hall?.y ?? 0);
+        expect(y).toBeLessThanOrEqual((hall?.y ?? 0) + (hall?.height ?? 0));
+      }
+    });
+
+    // The risers stand off the columns, so the picture has to be measured from
+    // the lines and not only from the boxes.
+    it("keeps every line inside the picture", () => {
+      for (const rig of Object.values(rigs)) {
+        const layout = layoutOf(rig());
+        for (const edge of layout.edges) {
+          for (const point of edge.points) {
+            expect(point.x).toBeGreaterThanOrEqual(0);
+            expect(point.x).toBeLessThanOrEqual(layout.width);
+            expect(point.y).toBeLessThanOrEqual(layout.height);
+          }
+        }
+      }
+    });
   });
 
   // Longest path alone put a device wherever the wiring led, and which edge got
@@ -712,6 +789,85 @@ describe("layoutGraph", () => {
     }
   });
 });
+
+/**
+ * Every pair of lines drawn along one another, as `a x b, 40px`.
+ *
+ * Two lines meeting at a jack share the last stub into it, and must: they
+ * really do end at the same place. Anywhere else, a shared run is two cables
+ * pretending to be one.
+ */
+function sharedRuns(layout: ReturnType<typeof layoutOf>): string[] {
+  const found: string[] = [];
+  const runs = layout.edges.flatMap((edge) =>
+    edge.points.slice(1).flatMap((to, index) => {
+      const from = edge.points[index];
+      return from && (from.x !== to.x || from.y !== to.y) ? [{ edge, from, to }] : [];
+    }),
+  );
+
+  for (let i = 0; i < runs.length; i++) {
+    for (let j = i + 1; j < runs.length; j++) {
+      const left = runs[i];
+      const right = runs[j];
+      if (!left || !right || left.edge.id === right.edge.id) continue;
+      if (sharesJack(left.edge, right.edge)) continue;
+      const along = sharedLength(left, right);
+      if (along > 2) found.push(`${left.edge.id} x ${right.edge.id}, ${Math.round(along)}px`);
+    }
+  }
+  return [...new Set(found)];
+}
+
+type Run = { from: { x: number; y: number }; to: { x: number; y: number } };
+
+function sharedLength(left: Run, right: Run): number {
+  const along = (a: number, b: number, c: number, d: number): number =>
+    Math.max(
+      0,
+      Math.min(Math.max(a, b), Math.max(c, d)) - Math.max(Math.min(a, b), Math.min(c, d)),
+    );
+
+  const flat = (run: Run) => Math.abs(run.from.y - run.to.y) < 0.5;
+  const upright = (run: Run) => Math.abs(run.from.x - run.to.x) < 0.5;
+  if (flat(left) && flat(right) && Math.abs(left.from.y - right.from.y) < 1.5) {
+    return along(left.from.x, left.to.x, right.from.x, right.to.x);
+  }
+  if (upright(left) && upright(right) && Math.abs(left.from.x - right.from.x) < 1.5) {
+    return along(left.from.y, left.to.y, right.from.y, right.to.y);
+  }
+  return 0;
+}
+
+function sharesJack(left: LayoutEdge, right: LayoutEdge): boolean {
+  const ends = (edge: LayoutEdge) => [jackOf(edge, "from"), jackOf(edge, "to")];
+  return ends(left).some((end) => ends(right).includes(end));
+}
+
+/**
+ * The jack this end of a line is on, or nothing two lines can share.
+ *
+ * A room has no jack, so two cables meeting one are never meeting at a jack —
+ * they are exactly the case that used to draw as a single arrowhead.
+ */
+function jackOf(edge: LayoutEdge, end: "from" | "to"): string {
+  const port = end === "from" ? edge.fromPort : edge.toPort;
+  return port === null ? `${edge.id}:${end}` : `${edge[end]}:${port}`;
+}
+
+/** Where the arrowheads land, keyed by the point, for everything that lands twice. */
+function endpoints(layout: ReturnType<typeof layoutOf>): [string, LayoutEdge[]][] {
+  const heads = new Map<string, LayoutEdge[]>();
+  for (const edge of layout.edges) {
+    const head = edge.points.at(-1);
+    if (!head) continue;
+    const key = `${Math.round(head.x)},${Math.round(head.y)}`;
+    const list = heads.get(key);
+    if (list) list.push(edge);
+    else heads.set(key, [edge]);
+  }
+  return [...heads].filter(([, edges]) => edges.length > 1);
+}
 
 /** Does a routed cable pass over a box it has nothing to do with? */
 function crosses(points: readonly { x: number; y: number }[], box: LayoutNode): boolean {

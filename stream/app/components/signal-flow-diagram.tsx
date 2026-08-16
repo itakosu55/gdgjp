@@ -803,7 +803,7 @@ function Jack({
         </circle>
       ) : null}
       <text
-        x={port.side === "left" ? port.x + 8 : port.x - 8}
+        x={port.labelX}
         y={port.y + 3}
         textAnchor={port.side === "left" ? "start" : "end"}
         className="pointer-events-none fill-muted-foreground text-[8px]"

@@ -300,8 +300,10 @@ component draws the `points` it is handed and owns no geometry.
 - `nestBoxes` folds an app's height into its host before ranking and `projectToRoots` re-points its
   edges, so the machine is the unit that gets ranked and the app never enters the column stages. Do
   not reintroduce `pinToHosts`, `hostsFirst`, or host pinning in `assignRows`. `routeNested` draws
-  the selection up the gutter between the two borders. The cost is that a conferencing app is no
-  longer pinned left — it goes where its machine goes.
+  the selection up the gutter between the two borders, and a capture between two apps crosses in the
+  gap between them (`routeSibling`) — those two strips are why `NEST_PAD` and `NEST_GAP` are as wide
+  as they are. The cost is that a conferencing app is no longer pinned left — it goes where its
+  machine goes.
 - `separateLanes` shifts each place's members as a rigid body onto its own band of rows;
   `computeFrames` draws the border, and a place holding only its own air gets none.
 - `computeBands` tints runs of columns sharing a role. **Three shapes say three things and must stay
@@ -310,6 +312,22 @@ component draws the `points` it is handed and owns no geometry.
   `host` edges (`isPortWired`) — every join carries space edges on both faces.
 - **Ports are first class.** Anchors come from the model's `ports` order, never from which links
   exist. The SVG carries `data-node-key` / `data-port-key` / `data-port-grip` / `data-link-id`.
+- **A room has rows, not jacks.** `sizeSpaces` grows a space box by how many couplings reach each
+  face and `spaceRows` hands them out, ordered by the far end. The box still carries no `ports` —
+  nothing may be patched into the air and a drag has nothing to land on there — but a hall with two
+  speakers and a laptop in it used to draw three couplings into one point under one arrowhead, which
+  is the picture saying they were one.
+- **Two lines may share a jack, and nothing else.** Crossing is fine; the halo under each line is
+  what makes a crossing read as one. Two lines along the same *run* are one line on screen, and the
+  wiring is under-reported. So `settleLanes` shares out every strip several lines have to get
+  through — the risers down to the return lanes (per face, deeper lane standing further out), a
+  machine's gutters, the gap between two boxes in one column — and `spread` leaves a strip's only
+  claimant exactly where it always was, so nothing moves in a picture that was never ambiguous. It
+  slides the run inward rather than out of the picture when the strip is narrow: the returns into
+  column 0 have only the page margin to stand in. `buildLayout` therefore measures the width from
+  the lines as well as the boxes. `layout.test.ts` asserts the property fixture by fixture.
+- **A machine's port labels clear its gutter** (`LayoutPort.labelX`, `LABEL_INSET`): a cable ending
+  on an app is painted after the machine it crosses, so a label left in the gutter is drawn through.
 - **Small edits move the picture a little.** Every stage is deterministic and `options.order` seeds
   the row ordering with the previous `Layout.order`.
 - Edge kinds differ on purpose: `internal` is not drawn (the routing matrix is the honest view),

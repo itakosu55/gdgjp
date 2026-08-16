@@ -53,6 +53,14 @@ export type LayoutPort = {
   side: PortSide;
   x: number;
   y: number;
+  /**
+   * Where this jack's label starts, which is not always just inside the box.
+   *
+   * A machine's own labels have to clear the gutter its apps' cables run in, or
+   * a device selection is drawn through the name of the jack it selects — and
+   * the cable wins, because it is painted after the box it crosses.
+   */
+  labelX: number;
 };
 
 export type PortSide = "left" | "right";
@@ -241,16 +249,47 @@ const ESCAPE = 18;
 /** The lanes under the diagram that the loop-closing edges take. */
 const RETURN_LANE_GAP = 30;
 const RETURN_LANE_PITCH = 14;
+/**
+ * Two lines that would run in one strip are moved apart by this much.
+ *
+ * A lane of its own under the picture is not enough for a return path: the
+ * risers down to it leave the same column as every other return, so drawn at
+ * one offset they descend on one line and six cables read as one. The same
+ * happens wherever a strip is the only way through — the gutter inside a
+ * machine, the gap between two boxes in one column — so each of those strips
+ * has a pitch, sized to what the strip actually holds.
+ */
+const RISER_PITCH = 8;
+const GUTTER_PITCH = 5;
+const CROSS_PITCH = 8;
+/** Nearer a face than this and a line stops reading as one that left it. */
+const LINE_FLOOR = 4;
+/** Between a jack and its label. */
+const LABEL_INSET = 8;
+/**
+ * How far a line may stand off a face before it is in the next column's way.
+ * A face at column 0 has only the page margin, which `roomBeside` reads off the
+ * anchor rather than assuming.
+ */
+const BESIDE_ROOM = COL_GAP - 2 * ELBOW;
 const ORDER_SWEEPS = 4;
 const ALIGN_PASSES = 4;
 /** Room above the boxes for the band captions. */
 const BAND_HEADER = 28;
 /** Gutter left between two bands, so they read as neighbours and not as one. */
 const BAND_GUTTER = 14;
-/** How far inside its machine an app is drawn. Also the gutter its cable takes. */
-const NEST_PAD = 12;
-/** Between two apps on one computer. */
-const NEST_GAP = 8;
+/**
+ * How far inside its machine an app is drawn. Also the gutter its cables take:
+ * every device selection on one machine runs in that strip, so it is sized to
+ * hold more than one of them.
+ */
+const NEST_PAD = 16;
+/**
+ * Between two apps on one computer. A cable from one to the other can only
+ * cross in the gap — it is the one strip between them that holds no box — so
+ * the gap is wide enough for more than one lane.
+ */
+const NEST_GAP = 20;
 /** Breathing room between a place frame and the boxes it holds. */
 const FRAME_PAD = 14;
 /** Room above a place frame's content for its caption. */
@@ -327,6 +366,9 @@ export function layoutGraph(graph: BuiltGraph, options: LayoutOptions = {}): Lay
   const keys = [...boxes.values()].filter((box) => box.parentKey === null).map((box) => box.key);
 
   const edges = collectEdges(graph, boxes);
+  // A room has no jacks to hang its couplings on, so it is sized by how many
+  // there are. Nothing before this point reads a box's height.
+  sizeSpaces(boxes, edges);
   // Ranking and ordering see the machine, not what is inside it. Ids survive the
   // projection, so the dummies these produce are still found by the real edge.
   const structural = projectToRoots(edges, roots);
@@ -604,6 +646,38 @@ function collectEdges(graph: BuiltGraph, boxes: Map<string, Box>): DrawnEdge[] {
 
 function linkIdOf(edge: GraphEdge): string | null {
   return edge.linkId ?? null;
+}
+
+/**
+ * Grows a room until every coupling meets it on a row of its own.
+ *
+ * A room is not a device and never grows jacks — nobody patches a speaker into
+ * the air, and a drag has nothing to land on there. But every cable touching
+ * one used to anchor on the middle of its face, so a hall with two speakers and
+ * a laptop in it drew three cables into a single point under a single
+ * arrowhead: three couplings that the picture said were one. A room holds a row
+ * per cable for the same reason a box holds a row per port, and `spaceRows`
+ * then hands them out; the rows are counted per face, exactly as ports are
+ * counted per direction.
+ */
+function sizeSpaces(boxes: Map<string, Box>, edges: readonly DrawnEdge[]): void {
+  const faces = new Map<string, { left: number; right: number }>();
+  const claim = (key: string, side: PortSide) => {
+    if (boxes.get(key)?.kind !== "space") return;
+    const face = faces.get(key) ?? { left: 0, right: 0 };
+    face[side] += 1;
+    faces.set(key, face);
+  };
+
+  for (const edge of edges) {
+    claim(edge.from, "right");
+    claim(edge.to, "left");
+  }
+
+  for (const [key, face] of faces) {
+    const box = boxes.get(key);
+    if (box) box.height = boxHeight(face.left, face.right);
+  }
 }
 
 /**
@@ -1205,14 +1279,19 @@ function buildLayout(
         y: box.y,
         width: box.width,
         height: box.height,
-        ports: box.ports.map((port) => ({
-          key: port.key,
-          label: port.label,
-          direction: port.direction,
-          side: port.side,
-          x: port.side === "right" ? box.x + box.width : box.x,
-          y: box.y + port.dy,
-        })),
+        ports: box.ports.map((port) => {
+          const x = port.side === "right" ? box.x + box.width : box.x;
+          const inset = box.children.length > 0 ? NEST_PAD + LABEL_INSET : LABEL_INSET;
+          return {
+            key: port.key,
+            label: port.label,
+            direction: port.direction,
+            side: port.side,
+            x,
+            y: box.y + port.dy,
+            labelX: port.side === "right" ? x - inset : x + inset,
+          };
+        }),
       },
     ];
   });
@@ -1220,42 +1299,7 @@ function buildLayout(
   let bottom = PADDING;
   for (const node of nodes) bottom = Math.max(bottom, node.y + node.height);
 
-  const laid: LayoutEdge[] = [];
-  const forwardIds = new Set(forward.map((edge) => edge.id));
-  let lane = 0;
-
-  for (const edge of edges) {
-    const from = placed.get(edge.from);
-    const to = placed.get(edge.to);
-    if (!from || !to) continue;
-    const a = anchorOf(from, edge.fromPort, "right");
-    const b = anchorOf(to, edge.toPort, "left");
-    const inner = nestedInside(from, to, placed)
-      ? from
-      : nestedInside(to, from, placed)
-        ? to
-        : null;
-    const sameColumn = to.column === from.column;
-    const isForward = forwardIds.has(edge.id) && to.column > from.column;
-    let points: Point[];
-    if (inner) points = routeNested(a, b, inner, from, to);
-    else if (sameColumn) points = routeSibling(a, b, from, to);
-    else if (isForward) points = routeForward(a, b, from, to, waypoints(edge, columns, column, y));
-    else points = routeBack(a, b, bottom + RETURN_LANE_GAP + lane++ * RETURN_LANE_PITCH);
-    laid.push({
-      id: edge.id,
-      from: edge.from,
-      to: edge.to,
-      fromPort: edge.fromPort,
-      toPort: edge.toPort,
-      kind: edge.kind,
-      media: edge.media,
-      linkId: edge.linkId,
-      sourceIds: edge.sourceIds,
-      back: inner === null && !isForward && !sameColumn,
-      points,
-    });
-  }
+  const laid = routeEdges(edges, placed, forward, columns, column, y, bottom);
 
   const frames = computeFrames(places, placed);
   const order = columns.flat();
@@ -1267,7 +1311,12 @@ function buildLayout(
     height = Math.max(height, frame.y + frame.height + PADDING);
   }
   for (const edge of laid) {
-    for (const point of edge.points) height = Math.max(height, point.y + PADDING);
+    // The return risers stand off the last column, which is past the last box,
+    // so the width has to follow the lines as the height already does.
+    for (const point of edge.points) {
+      width = Math.max(width, point.x);
+      height = Math.max(height, point.y + PADDING);
+    }
   }
   width += PADDING;
   const columnCount = nodes.reduce((max, node) => Math.max(max, node.column + 1), 0);
@@ -1402,14 +1451,388 @@ function waypoints(
   return points;
 }
 
+/**
+ * The four shapes a line can take, decided before any of them is drawn.
+ *
+ * They are worked out up front because which shape a line takes decides which
+ * strip it runs in, and a strip is shared: two lines that pick the same one
+ * have to be told about each other before either is routed.
+ */
+type EdgeShape = "nested" | "sibling" | "forward" | "back";
+
+type Plan = {
+  edge: DrawnEdge;
+  from: PlacedBox;
+  to: PlacedBox;
+  a: Anchor;
+  b: Anchor;
+  shape: EdgeShape;
+  /** The box drawn inside the other one, for a `nested` line. */
+  inner: PlacedBox | null;
+  /** The lane under the picture a `back` line returns in. */
+  lane: number;
+  /** How far off its face the line stands, at each end. */
+  out: number;
+  into: number;
+  /** Where a `sibling` line crosses between the two boxes. */
+  cross: number;
+};
+
+/**
+ * Routes every line, having first moved apart the ones that would otherwise be
+ * drawn on top of each other.
+ *
+ * Overlapping is not the same problem as crossing. Two cables that cross read
+ * as two cables — that is what the halo under each line is for — but two drawn
+ * along the same run are one line on screen, and where they end together they
+ * are one arrowhead too, so the picture silently under-reports the wiring. It
+ * happens wherever several lines have to get through the same strip: the risers
+ * down to the return lanes all leave one column, the device selections on one
+ * machine all run in one gutter, and two apps wired to each other can only
+ * cross in the gap between them.
+ *
+ * So each strip is shared out rather than defaulted into: `settle` gives every
+ * line claiming one an offset of its own, and a strip with a single claim keeps
+ * the offset it always had, which is what stops this from moving pictures that
+ * were never ambiguous.
+ */
+function routeEdges(
+  edges: readonly DrawnEdge[],
+  placed: Map<string, PlacedBox>,
+  forward: readonly DrawnEdge[],
+  columns: readonly string[][],
+  column: Map<string, number>,
+  y: Map<string, number>,
+  bottom: number,
+): LayoutEdge[] {
+  const rows = spaceRows(edges, placed);
+  const forwardIds = new Set(forward.map((edge) => edge.id));
+
+  const plans: Plan[] = [];
+  for (const edge of edges) {
+    const from = placed.get(edge.from);
+    const to = placed.get(edge.to);
+    if (!from || !to) continue;
+    const a = anchorOf(from, edge.fromPort, "right", rows.get(rowKey(edge, edge.from)));
+    const b = anchorOf(to, edge.toPort, "left", rows.get(rowKey(edge, edge.to)));
+    const inner = nestedInside(from, to, placed)
+      ? from
+      : nestedInside(to, from, placed)
+        ? to
+        : null;
+    // A device selection joins two jacks of one face; anything else between an
+    // app and its machine — a capture between two apps, most of all — is a
+    // sibling, and crosses between the boxes rather than running up the gutter.
+    const shape: EdgeShape =
+      inner && a.side === b.side
+        ? "nested"
+        : from.column === to.column
+          ? "sibling"
+          : forwardIds.has(edge.id) && to.column > from.column
+            ? "forward"
+            : "back";
+    plans.push({ edge, from, to, a, b, shape, inner, lane: 0, out: ELBOW, into: ELBOW, cross: 0 });
+  }
+
+  settleLanes(plans, bottom);
+
+  return plans.map((plan) => ({
+    id: plan.edge.id,
+    from: plan.edge.from,
+    to: plan.edge.to,
+    fromPort: plan.edge.fromPort,
+    toPort: plan.edge.toPort,
+    kind: plan.edge.kind,
+    media: plan.edge.media,
+    linkId: plan.edge.linkId,
+    sourceIds: plan.edge.sourceIds,
+    back: plan.shape === "back",
+    points: pointsOf(plan, columns, column, y),
+  }));
+}
+
+function pointsOf(
+  plan: Plan,
+  columns: readonly string[][],
+  column: Map<string, number>,
+  y: Map<string, number>,
+): Point[] {
+  const { a, b, from, to } = plan;
+  switch (plan.shape) {
+    case "nested":
+      return routeNested(a, b, plan.inner ?? from, plan.out);
+    case "sibling":
+      return routeSibling(a, b, plan.cross, plan.out, plan.into);
+    case "forward":
+      return routeForward(a, b, from, to, waypoints(plan.edge, columns, column, y));
+    case "back":
+      return routeBack(a, b, plan.lane, plan.out, plan.into);
+  }
+}
+
+function rowKey(edge: DrawnEdge, boxKey: string): string {
+  return `${edge.id}@${boxKey}`;
+}
+
+/**
+ * Which row of a room's face each cable meets it on.
+ *
+ * Ordered by the far end, so the fan out of a room does not cross itself on the
+ * way. That is the whole ordering: unlike a port, a room's row means nothing on
+ * its own — there is no jack there to name — so it may be decided by what makes
+ * the picture readable.
+ */
+function spaceRows(
+  edges: readonly DrawnEdge[],
+  placed: Map<string, PlacedBox>,
+): Map<string, number> {
+  type Face = { key: string; edges: DrawnEdge[] };
+  const faces = new Map<string, Face>();
+  const claim = (key: string, side: PortSide, edge: DrawnEdge) => {
+    if (placed.get(key)?.kind !== "space") return;
+    const id = `${key}:${side}`;
+    const face = faces.get(id) ?? { key, edges: [] };
+    face.edges.push(edge);
+    faces.set(id, face);
+  };
+
+  for (const edge of edges) {
+    if (!placed.has(edge.from) || !placed.has(edge.to)) continue;
+    claim(edge.from, "right", edge);
+    claim(edge.to, "left", edge);
+  }
+
+  const rows = new Map<string, number>();
+  for (const face of faces.values()) {
+    const ordered = [...face.edges].sort(
+      (left, right) =>
+        farSide(left, face.key, placed) - farSide(right, face.key, placed) ||
+        compare(left.id, right.id),
+    );
+    ordered.forEach((edge, index) => {
+      rows.set(rowKey(edge, face.key), HEADER_HEIGHT + index * PORT_PITCH + PORT_PITCH / 2);
+    });
+  }
+  return rows;
+}
+
+/** Where the other end of this line sits, which is what orders a room's rows. */
+function farSide(edge: DrawnEdge, near: string, placed: Map<string, PlacedBox>): number {
+  const isFrom = edge.from === near;
+  const far = placed.get(isFrom ? edge.to : edge.from);
+  if (!far) return 0;
+  const portKey = isFrom ? edge.toPort : edge.fromPort;
+  const port = portKey === null ? undefined : far.ports.find((entry) => entry.key === portKey);
+  return far.y + (port ? port.dy : far.height / 2);
+}
+
+function compare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** One line's claim on a strip that other lines also have to get through. */
+type Claim = {
+  strip: string;
+  /** What the claims in one strip are ordered by, innermost first. */
+  order: number;
+  /** Where the first line in the strip runs, and how far the strip reaches. */
+  base: number;
+  room: number;
+  pitch: number;
+  take: (offset: number) => void;
+};
+
+/**
+ * Hands out the shared strips, and gives every return path its own lane.
+ *
+ * The lanes are still assigned in document order, so a picture's return paths
+ * stay in the order the reader last saw them; everything else is derived from
+ * where the line already is.
+ */
+function settleLanes(plans: readonly Plan[], bottom: number): void {
+  const claims: Claim[] = [];
+  let lane = 0;
+
+  for (const plan of plans) {
+    if (plan.shape === "back") {
+      plan.lane = bottom + RETURN_LANE_GAP + lane++ * RETURN_LANE_PITCH;
+      // Both ends: two returns into one box's face collide on the way up out of
+      // the lanes exactly as two leaving one room collide on the way down.
+      // Deeper lane, further out — then no riser crosses a lane it is not in.
+      claims.push(
+        beside(plan.a, plan.lane, (offset) => {
+          plan.out = offset;
+        }),
+        beside(plan.b, plan.lane, (offset) => {
+          plan.into = offset;
+        }),
+      );
+      continue;
+    }
+
+    if (plan.shape === "nested") {
+      claims.push(
+        gutter(plan.inner, plan.a.side, plan.a.y, (offset) => {
+          plan.out = offset;
+        }),
+      );
+      continue;
+    }
+
+    if (plan.shape !== "sibling") continue;
+    // Two apps on one machine run in its gutters; two boxes standing in one
+    // column have the whole column gap.
+    claims.push(
+      plan.from.parentKey !== null
+        ? gutter(plan.from, plan.a.side, plan.a.y, (offset) => {
+            plan.out = offset;
+          })
+        : beside(plan.a, plan.a.y, (offset) => {
+            plan.out = offset;
+          }),
+      plan.to.parentKey !== null
+        ? gutter(plan.to, plan.b.side, plan.b.y, (offset) => {
+            plan.into = offset;
+          })
+        : beside(plan.b, plan.b.y, (offset) => {
+            plan.into = offset;
+          }),
+    );
+  }
+
+  settle(claims);
+  crossings(plans);
+}
+
+/** A line standing off a face, in the strip beside it. */
+function beside(anchor: Anchor, order: number, take: (offset: number) => void): Claim {
+  return {
+    strip: `beside:${Math.round(anchor.x)}:${anchor.side}`,
+    order,
+    base: ELBOW,
+    room: roomBeside(anchor),
+    pitch: RISER_PITCH,
+    take,
+  };
+}
+
+/** A line running in the gutter between an app's border and its machine's. */
+function gutter(
+  inner: PlacedBox | null,
+  side: PortSide,
+  order: number,
+  take: (offset: number) => void,
+): Claim {
+  return {
+    strip: `gutter:${inner?.parentKey ?? ""}:${side}`,
+    order,
+    base: NEST_PAD / 2,
+    room: NEST_PAD - 3,
+    pitch: GUTTER_PITCH,
+    take,
+  };
+}
+
+/**
+ * How far a line may stand off this face.
+ *
+ * A face at column 0 has only the page margin to its left, and a line pushed
+ * past it would be drawn outside the picture rather than merely too near the
+ * next column — so the room is read off the anchor.
+ */
+function roomBeside(anchor: Anchor): number {
+  if (anchor.side === "right") return BESIDE_ROOM;
+  return Math.max(ELBOW, Math.min(BESIDE_ROOM, anchor.x - PADDING / 2));
+}
+
+function settle(claims: readonly Claim[]): void {
+  const strips = new Map<string, Claim[]>();
+  for (const claim of claims) {
+    const list = strips.get(claim.strip);
+    if (list) list.push(claim);
+    else strips.set(claim.strip, [claim]);
+  }
+
+  for (const list of strips.values()) {
+    const ordered = [...list].sort((left, right) => left.order - right.order);
+    ordered.forEach((claim, index) => claim.take(spread(index, ordered.length, claim)));
+  }
+}
+
+/**
+ * Where the `index`th of `count` lines runs in a strip.
+ *
+ * One line keeps `base`, which is the offset the picture has always used. The
+ * rest follow at `pitch`, and the run slides inward when the strip is too
+ * narrow to hold them all outside it — the returns into the leftmost column
+ * have only the page margin to stand in, and a line pushed past that is drawn
+ * off the picture rather than merely close to the next column. Cramped is worse
+ * than spread out, but both beat drawn on top of one another, and `LINE_FLOOR`
+ * is what keeps the innermost still reading as a line that left the face.
+ */
+function spread(index: number, count: number, claim: Claim): number {
+  if (count <= 1) return claim.base;
+  const room = Math.max(claim.room, LINE_FLOOR);
+  const step = Math.min(claim.pitch, (room - LINE_FLOOR) / (count - 1));
+  const first = Math.min(claim.base, room - step * (count - 1));
+  return first + index * step;
+}
+
+/**
+ * Where each line between two boxes in one column crosses between them.
+ *
+ * The gap is the only strip there that holds no box, so several cables between
+ * one pair — an app's window taken as both sound and picture is two — have to
+ * share it. Spread about the middle of the gap rather than out from one edge,
+ * so a single cable still crosses where it always did.
+ */
+function crossings(plans: readonly Plan[]): void {
+  const pairs = new Map<string, Plan[]>();
+  for (const plan of plans) {
+    if (plan.shape !== "sibling") continue;
+    const key = [plan.from.key, plan.to.key].sort(compare).join("|");
+    const list = pairs.get(key);
+    if (list) list.push(plan);
+    else pairs.set(key, [plan]);
+  }
+
+  for (const list of pairs.values()) {
+    const first = list[0];
+    if (!first) continue;
+    const above = first.from.y <= first.to.y ? first.from : first.to;
+    const below = above === first.from ? first.to : first.from;
+    const gap = below.y - (above.y + above.height);
+    const middle = above.y + above.height + Math.max(0, gap) / 2;
+    const step = Math.min(CROSS_PITCH, Math.max(0, gap - 6) / Math.max(1, list.length - 1));
+    const ordered = [...list].sort(
+      (left, right) => left.a.y - right.a.y || compare(left.edge.id, right.edge.id),
+    );
+    ordered.forEach((plan, index) => {
+      plan.cross = middle + (index - (ordered.length - 1) / 2) * step;
+    });
+  }
+}
+
 type Anchor = { x: number; y: number; side: PortSide };
 
-function anchorOf(box: PlacedBox, portKey: string | null, fallback: PortSide): Anchor {
+/**
+ * Where a line meets a box: the jack it names, or the row it was given.
+ *
+ * `row` is what a room gets instead of a jack (`spaceRows`). Falling back to
+ * the middle of the face is still right for a box with neither — one line
+ * cannot collide with itself.
+ */
+function anchorOf(
+  box: PlacedBox,
+  portKey: string | null,
+  fallback: PortSide,
+  row?: number,
+): Anchor {
   const port = portKey === null ? undefined : box.ports.find((entry) => entry.key === portKey);
   if (!port) {
     return {
       x: fallback === "right" ? box.x + box.width : box.x,
-      y: box.y + box.height / 2,
+      y: box.y + (row ?? box.height / 2),
       side: fallback,
     };
   }
@@ -1472,13 +1895,12 @@ function escapeLane(y: number, box: PlacedBox): number {
  * an app plays into one, in→in when it captures from one), so the connector
  * runs up the gutter between the app's border and the machine's — the only
  * strip of the machine nothing else is drawn in, including its other apps.
- * Anything else between the two is not a device selection — a capture between
- * two apps on this machine is the other case — and falls back to the sibling
- * route.
+ * Which lane of that gutter it takes is `settleLanes`': two apps selecting the
+ * same jack of one machine ran down the same line otherwise, and a machine with
+ * OBS and Meet on it is the ordinary case, not the awkward one.
  */
-function routeNested(a: Anchor, b: Anchor, inner: PlacedBox, from: PlacedBox, to: PlacedBox) {
-  if (a.side !== b.side) return routeSibling(a, b, from, to);
-  const gutter = a.side === "right" ? inner.x + inner.width + NEST_PAD / 2 : inner.x - NEST_PAD / 2;
+function routeNested(a: Anchor, b: Anchor, inner: PlacedBox, lane: number) {
+  const gutter = a.side === "right" ? inner.x + inner.width + lane : inner.x - lane;
   return [
     { x: a.x, y: a.y },
     { x: gutter, y: a.y },
@@ -1488,25 +1910,21 @@ function routeNested(a: Anchor, b: Anchor, inner: PlacedBox, from: PlacedBox, to
 }
 
 /**
- * Two boxes in the same column: an app and the computer it runs on.
+ * Two boxes in the same column: an app and the computer it runs on, or two apps
+ * on one machine.
  *
- * The connector crosses the gap between them rather than taking the return
- * lane, because nothing here is going backwards — it is one machine. When both
- * jacks are on the same face, which is the usual shape for a host link
- * (out→out or in→in), this collapses to a straight run down that side.
+ * The connector crosses between them rather than taking the return lane,
+ * because nothing here is going backwards — it is one machine. When both jacks
+ * are on the same face this collapses to a straight run down that side.
  */
-function routeSibling(a: Anchor, b: Anchor, from: PlacedBox, to: PlacedBox): Point[] {
-  const above = from.y <= to.y ? from : to;
-  const below = above === from ? to : from;
-  const midY = (above.y + above.height + below.y) / 2;
-
-  const ax = a.side === "right" ? a.x + ELBOW : a.x - ELBOW;
-  const bx = b.side === "right" ? b.x + ELBOW : b.x - ELBOW;
+function routeSibling(a: Anchor, b: Anchor, cross: number, out: number, into: number): Point[] {
+  const ax = a.side === "right" ? a.x + out : a.x - out;
+  const bx = b.side === "right" ? b.x + into : b.x - into;
   return [
     { x: a.x, y: a.y },
     { x: ax, y: a.y },
-    { x: ax, y: midY },
-    { x: bx, y: midY },
+    { x: ax, y: cross },
+    { x: bx, y: cross },
     { x: bx, y: b.y },
     { x: b.x, y: b.y },
   ];
@@ -1515,11 +1933,11 @@ function routeSibling(a: Anchor, b: Anchor, from: PlacedBox, to: PlacedBox): Poi
 /**
  * The return path of a loop, routed in its own lane under the diagram. A howl
  * is the normal input here, so the edge that closes it deserves to be the one
- * edge you cannot miss.
+ * edge you cannot miss — which it is not while six of them descend on one line.
  */
-function routeBack(a: Anchor, b: Anchor, lane: number): Point[] {
-  const ax = a.side === "right" ? a.x + ELBOW : a.x - ELBOW;
-  const bx = b.side === "left" ? b.x - ELBOW : b.x + ELBOW;
+function routeBack(a: Anchor, b: Anchor, lane: number, out: number, into: number): Point[] {
+  const ax = a.side === "right" ? a.x + out : a.x - out;
+  const bx = b.side === "left" ? b.x - into : b.x + into;
   return [
     { x: a.x, y: a.y },
     { x: ax, y: a.y },
