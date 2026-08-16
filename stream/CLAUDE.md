@@ -297,13 +297,26 @@ component draws the `points` it is handed and owns no geometry.
   (`input` / `hub` / `output`). Do not "simplify" the cutting away — a howling setup is the normal
   input here, and relaxing over a loop rendered a four-node document ~5000px wide. Tests assert
   `columns <= nodes.length` and, from the browser, the rendered width.
-- `nestBoxes` folds an app's height into its host before ranking and `projectToRoots` re-points its
-  edges, so the machine is the unit that gets ranked and the app never enters the column stages. Do
-  not reintroduce `pinToHosts`, `hostsFirst`, or host pinning in `assignRows`. `routeNested` draws
-  the selection up the gutter between the two borders, and a capture between two apps crosses in the
-  gap between them (`routeSibling`) — those two strips are why `NEST_PAD` and `NEST_GAP` are as wide
-  as they are. The cost is that a conferencing app is no longer pinned left — it goes where its
-  machine goes.
+- `nestBoxes` files an app inside its host and `sizeHosts` folds its height into the machine before
+  ranking; `projectToRoots` re-points its edges, so the machine is the unit that gets ranked and the
+  app never enters the column stages. Do not reintroduce `pinToHosts`, `hostsFirst`, or host pinning
+  in `assignRows`. `routeNested` draws the selection up the gutter between the two borders, and a
+  capture between two apps crosses in the gap between them (`routeSibling`). The cost is that a
+  conferencing app is no longer pinned left — it goes where its machine goes.
+- **A machine is as wide as its cables need.** Its apps' wiring has two ways through — the gutter
+  down each face and the gap between two apps — and both are fixed strips, so `sizeHosts` sizes them
+  from what they hold (`gutterWidth`, `crossingGap`) instead of letting `spread` crowd the lines into
+  them: `NEST_PAD` and `NEST_GAP` are floors, not the answer. It grows the machine rather than
+  shrinking the app, and it runs after ranking because a line's shape decides which strip it lands
+  in — which is also why it and `settleLanes` both ask `routeOf` rather than each classifying for
+  itself. `columnSlots` then keeps the gap between two columns at `COL_GAP` however wide a box got,
+  because every riser assumes it has one to stand in.
+- **The page margin is a strip too** (`leftMargin`): the first column's left face has no column gap
+  to stand off in, only the margin, and a hall returning into three mics put three risers into
+  fourteen pixels. It is sized from the same `standoffs` reading `sizeHosts` counts, so the
+  innermost stands where a single riser has always stood and the picture moves right instead of the
+  lines moving together. `PADDING` past the outermost, which is what the width and height already
+  leave past theirs.
 - `separateLanes` shifts each place's members as a rigid body onto its own band of rows;
   `computeFrames` draws the border, and a place holding only its own air gets none.
 - `computeBands` tints runs of columns sharing a role. **Three shapes say three things and must stay
@@ -326,8 +339,16 @@ component draws the `points` it is handed and owns no geometry.
   slides the run inward rather than out of the picture when the strip is narrow: the returns into
   column 0 have only the page margin to stand in. `buildLayout` therefore measures the width from
   the lines as well as the boxes. `layout.test.ts` asserts the property fixture by fixture.
+- **One pitch everywhere** (`LINE_PITCH`): lines packed tighter in one strip than in the rest of the
+  picture read as fewer lines, which is the same lie in a milder form. Two consequences worth
+  keeping: a return leaving an app `escapeMachine`s before descending, so it lands in the strip
+  beside the column that every other riser is claiming — in a gutter, keyed per machine, two returns
+  into two machines in one column were each alone in their own strip at the same x — and a line with
+  no jack meets a face `betweenRows`, the one offset a jack cannot be at.
 - **A machine's port labels clear its gutter** (`LayoutPort.labelX`, `LABEL_INSET`): a cable ending
   on an app is painted after the machine it crosses, so a label left in the gutter is drawn through.
+  The inset follows that face's `padLeft` / `padRight`, so a machine widened on one side does not
+  push the labels on the other side in with it.
 - **Small edits move the picture a little.** Every stage is deterministic and `options.order` seeds
   the row ordering with the previous `Layout.order`.
 - Edge kinds differ on purpose: `internal` is not drawn (the routing matrix is the honest view),

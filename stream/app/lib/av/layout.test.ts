@@ -267,7 +267,95 @@ describe("layoutGraph", () => {
           expect([point, [...jacks]]).toEqual([point, [...jacks].slice(0, 1)]);
         }
       });
+
+      // Not drawn as one line, but drawn nearer than lines are anywhere else,
+      // which under-reports them just as surely once the reader zooms out.
+      it(`gives a line inside a machine the room a line outside it has in ${name}`, () => {
+        expect(crowdedRuns(layoutOf(rig()))).toEqual([]);
+      });
+
+      it(`keeps the returns into the first column a pitch apart in ${name}`, () => {
+        const runs = marginRuns(layoutOf(rig()));
+        for (let i = 1; i < runs.length; i++) {
+          expect((runs[i] ?? 0) - (runs[i - 1] ?? 0)).toBeGreaterThanOrEqual(PITCH - 0.01);
+        }
+      });
     }
+
+    // Every other left face has a whole column gap to stand off in. The first
+    // has the page margin, and a hall returning into three mics put three
+    // risers into fourteen pixels, one of them ten from the edge of the picture.
+    describe("the page margin the first column's returns stand in", () => {
+      const hall = (mics: string[]): Partial<SetupDoc> => ({
+        spaces: [HALL],
+        nodes: [
+          ...mics.map((deviceId, index) => ({
+            id: `n_mic${index}`,
+            deviceId,
+            spaceId: "sp_hall",
+          })),
+          { id: "n_mixer", deviceId: "d_mixer" },
+          { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+        ],
+        links: [
+          ...mics.map((_, index): SetupDoc["links"][number] => ({
+            id: `l${index}`,
+            from: [`n_mic${index}`, "out"],
+            to: ["n_mixer", index === 0 ? "ch1" : "ch2"],
+          })),
+          { id: "lp", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+        ],
+      });
+
+      it("widens with the number of returns standing in it", () => {
+        const one = layoutOf(hall(["d_mic1"]));
+        const three = layoutOf(hall(["d_mic1", "d_mic2", "d_condenser"]));
+        expect(marginRuns(three).length).toBe(3);
+        expect(firstColumnX(three)).toBeGreaterThan(firstColumnX(one));
+      });
+
+      // The innermost riser stands where a single riser has always stood, and
+      // the outermost is as far from the edge of the picture either way.
+      it("leaves the same room at both ends however many there are", () => {
+        const one = layoutOf(hall(["d_mic1"]));
+        const three = layoutOf(hall(["d_mic1", "d_mic2", "d_condenser"]));
+        expect(marginRuns(three)[0]).toBe(marginRuns(one)[0]);
+        expect(firstColumnX(three) - (marginRuns(three).at(-1) ?? 0)).toBe(
+          firstColumnX(one) - (marginRuns(one).at(-1) ?? 0),
+        );
+      });
+    });
+
+    // The room a machine's cables need is the machine's problem, not theirs.
+    it("widens the machine rather than the app it holds", () => {
+      const quiet = layoutOf({
+        nodes: [
+          { id: "n_pc", deviceId: "d_pc" },
+          { id: "n_obs", deviceId: "d_obs", hostNodeId: "n_pc", ports: OBS_SOURCES },
+        ],
+      });
+      const busy = layoutOf(hybridMonitorMix());
+
+      expect(nodeOf(busy, "n_obs")?.width).toBe(nodeOf(quiet, "n_obs")?.width);
+      expect(nodeOf(busy, "n_pc")?.width).toBeGreaterThan(nodeOf(quiet, "n_pc")?.width ?? 0);
+    });
+
+    // What a wider machine must not spend is the gap the next column's cables
+    // stand off in: every riser in the picture assumes it has all of one.
+    it("leaves the same gap between two columns however wide a machine got", () => {
+      const layout = layoutOf(hybridMonitorMix());
+      const tops = layout.nodes.filter((node) => node.parentKey === null);
+      const gaps: number[] = [];
+      for (let col = 0; col + 1 < layout.columns; col++) {
+        const inColumn = tops.filter((node) => node.column === col);
+        const next = tops.filter((node) => node.column === col + 1);
+        if (inColumn.length === 0 || next.length === 0) continue;
+        const right = Math.max(...inColumn.map((node) => node.x + node.width));
+        gaps.push(Math.min(...next.map((node) => node.x)) - right);
+      }
+      expect(gaps.length).toBeGreaterThan(1);
+      expect(new Set(gaps).size).toBe(1);
+    });
 
     // A room has no jacks to hang them on, so every cable used to meet it in
     // the middle of its face.
@@ -817,6 +905,97 @@ function sharedRuns(layout: ReturnType<typeof layoutOf>): string[] {
     }
   }
   return [...new Set(found)];
+}
+
+/** What two lines sharing a strip are moved apart by: the layout's `LINE_PITCH`. */
+const PITCH = 8;
+
+/**
+ * Pairs of lines running alongside each other inside one machine, nearer than
+ * two lines are allowed to be anywhere else.
+ *
+ * Inside a machine because that is where the strips are narrow — a gutter down
+ * each side and the gap between two apps is the whole of it — and the answer to
+ * a narrow strip is a wider machine, not closer lines. Two runs on the same
+ * jack are left out for the same reason `sharedRuns` leaves them out.
+ */
+function crowdedRuns(layout: ReturnType<typeof layoutOf>): string[] {
+  const machines = layout.nodes.filter((node) =>
+    layout.nodes.some((other) => other.parentKey === node.key),
+  );
+  const runs = layout.edges.flatMap((edge) =>
+    edge.points.slice(1).flatMap((to, index) => {
+      const from = edge.points[index];
+      return from && (from.x !== to.x || from.y !== to.y) ? [{ edge, from, to }] : [];
+    }),
+  );
+
+  const found: string[] = [];
+  for (const machine of machines) {
+    const inside = runs.filter((run) => within(run, machine));
+    for (let i = 0; i < inside.length; i++) {
+      for (let j = i + 1; j < inside.length; j++) {
+        const left = inside[i];
+        const right = inside[j];
+        if (!left || !right || left.edge.id === right.edge.id) continue;
+        if (sharesJack(left.edge, right.edge)) continue;
+        const apart = separation(left, right);
+        if (apart === null || apart >= PITCH - 0.01) continue;
+        found.push(`${left.edge.id} x ${right.edge.id} in ${machine.key}, ${apart.toFixed(1)}px`);
+      }
+    }
+  }
+  return [...new Set(found)];
+}
+
+function firstColumnX(layout: ReturnType<typeof layoutOf>): number {
+  return Math.min(...layout.nodes.filter((node) => node.parentKey === null).map((node) => node.x));
+}
+
+/** Where the lines standing off the first column run, page edge first. */
+function marginRuns(layout: ReturnType<typeof layoutOf>): number[] {
+  const first = firstColumnX(layout);
+  const xs = new Set<number>();
+  for (const edge of layout.edges) {
+    for (let i = 1; i < edge.points.length; i++) {
+      const from = edge.points[i - 1];
+      const to = edge.points[i];
+      if (!from || !to || from.x !== to.x || from.y === to.y) continue;
+      if (from.x < first) xs.add(from.x);
+    }
+  }
+  return [...xs].sort((a, b) => a - b);
+}
+
+function within(run: Run, box: LayoutNode): boolean {
+  const points = [run.from, run.to];
+  return points.every(
+    (point) =>
+      point.x >= box.x &&
+      point.x <= box.x + box.width &&
+      point.y >= box.y &&
+      point.y <= box.y + box.height,
+  );
+}
+
+/** How far apart two parallel runs are where they overlap, or `null` if they do not. */
+function separation(left: Run, right: Run): number | null {
+  const along = (a: number, b: number, c: number, d: number): number =>
+    Math.min(Math.max(a, b), Math.max(c, d)) - Math.max(Math.min(a, b), Math.min(c, d));
+
+  const flat = (run: Run) => Math.abs(run.from.y - run.to.y) < 0.5;
+  const upright = (run: Run) => Math.abs(run.from.x - run.to.x) < 0.5;
+  if (flat(left) && flat(right) && along(left.from.x, left.to.x, right.from.x, right.to.x) > 1) {
+    return Math.abs(left.from.y - right.from.y);
+  }
+  if (
+    upright(left) &&
+    upright(right) &&
+    along(left.from.y, left.to.y, right.from.y, right.to.y) > 1
+  ) {
+    return Math.abs(left.from.x - right.from.x);
+  }
+  return null;
 }
 
 type Run = { from: { x: number; y: number }; to: { x: number; y: number } };

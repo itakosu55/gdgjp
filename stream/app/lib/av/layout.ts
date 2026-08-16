@@ -256,12 +256,14 @@ const RETURN_LANE_PITCH = 14;
  * risers down to it leave the same column as every other return, so drawn at
  * one offset they descend on one line and six cables read as one. The same
  * happens wherever a strip is the only way through — the gutter inside a
- * machine, the gap between two boxes in one column — so each of those strips
- * has a pitch, sized to what the strip actually holds.
+ * machine, the gap between two boxes in one column.
+ *
+ * One pitch for all of them, because the reader is counting lines, and a strip
+ * where they run closer together than elsewhere reads as fewer of them. Where a
+ * strip is too narrow to hold its lines at this pitch it is the strip that
+ * gives: `sizeHosts` widens the machine rather than crowding the cables.
  */
-const RISER_PITCH = 8;
-const GUTTER_PITCH = 5;
-const CROSS_PITCH = 8;
+const LINE_PITCH = 8;
 /** Nearer a face than this and a line stops reading as one that left it. */
 const LINE_FLOOR = 4;
 /** Between a jack and its label. */
@@ -279,17 +281,26 @@ const BAND_HEADER = 28;
 /** Gutter left between two bands, so they read as neighbours and not as one. */
 const BAND_GUTTER = 14;
 /**
- * How far inside its machine an app is drawn. Also the gutter its cables take:
- * every device selection on one machine runs in that strip, so it is sized to
- * hold more than one of them.
+ * The narrowest an app's gutter gets — the strip between its border and its
+ * machine's, which every cable of that app runs in. A machine with more cables
+ * than this holds gets a wider one (`sizeHosts`); this is the floor, so a
+ * machine running one quiet app is drawn exactly as it always was.
  */
 const NEST_PAD = 16;
 /**
- * Between two apps on one computer. A cable from one to the other can only
- * cross in the gap — it is the one strip between them that holds no box — so
- * the gap is wide enough for more than one lane.
+ * Between the outermost line in a gutter and the machine's own border, which
+ * carries the machine's own jacks — a cable hugging it reads as plugged into
+ * them.
+ */
+const NEST_CLEAR = 6;
+/**
+ * The narrowest gap between two apps on one computer. A cable from one to the
+ * other can only cross in the gap — it is the one strip between them that holds
+ * no box — so a busy pair is given a wider one.
  */
 const NEST_GAP = 20;
+/** Between a crossing and the box above or below the gap it crosses in. */
+const CROSS_CLEAR = 6;
 /** Breathing room between a place frame and the boxes it holds. */
 const FRAME_PAD = 14;
 /** Room above a place frame's content for its caption. */
@@ -298,10 +309,6 @@ const FRAME_HEADER = 20;
 const PLACE_GAP = 30;
 /** The lane for everything whose place is unknown. Sorts last. */
 const NO_PLACE = "";
-
-function columnX(column: number): number {
-  return PADDING + column * (BOX_WIDTH + COL_GAP);
-}
 
 type BoxPort = {
   key: string;
@@ -322,6 +329,15 @@ type Box = {
   children: Box[];
   /** Where the children start, relative to the box top. */
   contentTop: number;
+  /**
+   * How far in from each face the children are drawn, which is how wide the
+   * gutter their cables run in is. Per face, because a machine whose apps are
+   * all captured from one side has no reason to be fat on the other.
+   */
+  padLeft: number;
+  padRight: number;
+  /** Between two children, which is the strip a cable between them crosses in. */
+  gap: number;
   depth: number;
   /** The place this box is in, which is the lane it is laid out in. */
   placeKey: string | null;
@@ -380,6 +396,11 @@ export function layoutGraph(graph: BuiltGraph, options: LayoutOptions = {}): Lay
     column.set(box.key, column.get(roots.get(box.key) ?? box.key) ?? 0);
   }
 
+  // Which column a box is in decides which lines run inside it, and that is
+  // what a machine has to be big enough for. Ranking cares about neither.
+  const forwardIds = new Set(forward.map((edge) => edge.id));
+  sizeHosts(boxes, edges, column, forwardIds);
+
   const { items, segments } = insertDummies(keys, forward, column);
   const lanes = laneOfEach(boxes, items, forward, places);
   // Two spaces of one room share a lane *and* a column, so nothing else in the
@@ -399,7 +420,7 @@ export function layoutGraph(graph: BuiltGraph, options: LayoutOptions = {}): Lay
   );
   const y = assignRows(order, boxes, segments, lanes, laneOrder(lanes, places), places);
 
-  return buildLayout(places, boxes, edges, forward, column, order, y);
+  return buildLayout(places, boxes, edges, forwardIds, column, order, y);
 }
 
 /**
@@ -470,6 +491,9 @@ function collectBoxes(graph: BuiltGraph, places: Map<string, Place>): Map<string
       parentKey: resolved.node.hostNodeId ?? null,
       children: [],
       contentTop: 0,
+      padLeft: NEST_PAD,
+      padRight: NEST_PAD,
+      gap: NEST_GAP,
       depth: 0,
       placeKey: spaceId ? (placeOfSpace.get(spaceId) ?? null) : null,
       meetingLabel: spaceId ? (meetingOfSpace.get(spaceId) ?? null) : null,
@@ -491,6 +515,9 @@ function collectBoxes(graph: BuiltGraph, places: Map<string, Place>): Map<string
       parentKey: null,
       children: [],
       contentTop: 0,
+      padLeft: NEST_PAD,
+      padRight: NEST_PAD,
+      gap: NEST_GAP,
       depth: 0,
       placeKey: placeOfSpace.get(space.id) ?? null,
       meetingLabel: null,
@@ -506,13 +533,12 @@ function collectBoxes(graph: BuiltGraph, places: Map<string, Place>): Map<string
 }
 
 /**
- * Files each app inside the machine it runs on, and grows the machine to hold
- * it.
+ * Files each app inside the machine it runs on.
  *
  * The child keeps its own ports and its own box; it just lives in its parent's
- * lower half, below the parent's own jacks. A machine's height is therefore
- * known before anything is placed, which is what lets the column stages treat
- * it as one item and never learn that nesting exists.
+ * lower half, below the parent's own jacks. Sizing is left to `sizeHosts`,
+ * which runs once the cables are known — a machine is as big as what it has to
+ * hold, and what it has to hold is its apps *and* their wiring.
  */
 function nestBoxes(boxes: Map<string, Box>): void {
   for (const box of boxes.values()) {
@@ -523,9 +549,6 @@ function nestBoxes(boxes: Map<string, Box>): void {
   for (const box of boxes.values()) {
     const parent = box.parentKey === null ? undefined : boxes.get(box.parentKey);
     parent?.children.push(box);
-  }
-  for (const box of boxes.values()) {
-    if (box.parentKey === null) sizeNested(box, 0);
   }
 }
 
@@ -545,19 +568,36 @@ function breakHostCycles(boxes: Map<string, Box>): void {
   }
 }
 
+/**
+ * Lays a box's children out inside it, growing the box until they fit.
+ *
+ * It grows outward rather than squeezing inward: an app is drawn at the width
+ * an app is drawn at, and a machine needing a wide gutter gets a wider machine,
+ * not a narrower app. Nothing has been placed yet, so the column stages still
+ * see one item whose size is already settled.
+ */
 function sizeNested(box: Box, depth: number): void {
   box.depth = depth;
   for (const child of box.children) {
-    child.width = box.width - 2 * NEST_PAD;
+    child.width = nestedWidth(depth + 1);
     sizeNested(child, depth + 1);
   }
   if (box.children.length === 0) return;
+  const widest = box.children.reduce((max, child) => Math.max(max, child.width), 0);
+  for (const child of box.children) child.width = widest;
+
   const inner = box.children.reduce(
-    (total, child, index) => total + child.height + (index === 0 ? 0 : NEST_GAP),
+    (total, child, index) => total + child.height + (index === 0 ? 0 : box.gap),
     0,
   );
+  box.width = Math.max(box.width, widest + box.padLeft + box.padRight);
   box.contentTop = box.height + NEST_PAD;
   box.height = box.contentTop + inner + NEST_PAD;
+}
+
+/** How wide a box is drawn at this nesting depth, before its own cables widen it. */
+function nestedWidth(depth: number): number {
+  return BOX_WIDTH - 2 * NEST_PAD * depth;
 }
 
 /** Every box mapped to the top-level box it is drawn inside. */
@@ -678,6 +718,156 @@ function sizeSpaces(boxes: Map<string, Box>, edges: readonly DrawnEdge[]): void 
     const box = boxes.get(key);
     if (box) box.height = boxHeight(face.left, face.right);
   }
+}
+
+/**
+ * Widens every machine until the cables inside it have the room the cables
+ * outside it have, then lays its apps out in it.
+ *
+ * A room grows a row per coupling (`sizeSpaces`); a machine grows a lane per
+ * cable, for the same reason. Its apps' wiring has only two ways through — the
+ * gutter down each side, and the gap between two apps — and those are fixed
+ * strips, so a machine running OBS and Meet used to draw four connectors 3px
+ * apart while every line outside it kept 8. Cramped is its own kind of wrong
+ * answer: the reader is counting lines, and lines drawn closer together than
+ * the rest of the picture read as fewer of them.
+ *
+ * So the strip is sized to what it holds rather than what it holds being
+ * squeezed into the strip — outward, into the machine's own width, because the
+ * app inside is a box someone has to read. The counting has to agree with
+ * `settleLanes` about which lines end up in which strip, which is why both ask
+ * `routeOf` rather than each deciding for itself; it runs after ranking for the
+ * same reason, since that is when a line's shape is known. Nothing before this
+ * point reads a nested box's size.
+ */
+function sizeHosts(
+  boxes: Map<string, Box>,
+  edges: readonly DrawnEdge[],
+  column: Map<string, number>,
+  forwardIds: ReadonlySet<string>,
+): void {
+  const gutters = new Map<string, number>();
+  const pairs = new Map<string, { machine: string; lines: number }>();
+
+  for (const edge of edges) {
+    const from = boxes.get(edge.from);
+    const to = boxes.get(edge.to);
+    if (!from || !to) continue;
+    const route = routeOf(edge, from, to, boxes, column, forwardIds);
+
+    for (const stand of standoffs(route, from, to)) {
+      if (stand.strip !== "gutter" || stand.box.parentKey === null) continue;
+      const strip = gutterStrip(stand.box.parentKey, stand.side);
+      gutters.set(strip, (gutters.get(strip) ?? 0) + 1);
+    }
+    if (route.shape !== "sibling") continue;
+    if (from.parentKey === null || from.parentKey !== to.parentKey) continue;
+    const key = [from.key, to.key].sort(compare).join("|");
+    const pair = pairs.get(key) ?? { machine: from.parentKey, lines: 0 };
+    pair.lines += 1;
+    pairs.set(key, pair);
+  }
+
+  const busiest = new Map<string, number>();
+  for (const pair of pairs.values()) {
+    busiest.set(pair.machine, Math.max(busiest.get(pair.machine) ?? 0, pair.lines));
+  }
+
+  for (const box of boxes.values()) {
+    if (box.children.length === 0) continue;
+    box.padLeft = gutterWidth(gutters.get(gutterStrip(box.key, "left")) ?? 0);
+    box.padRight = gutterWidth(gutters.get(gutterStrip(box.key, "right")) ?? 0);
+    box.gap = crossingGap(busiest.get(box.key) ?? 0);
+  }
+  for (const box of boxes.values()) {
+    if (box.parentKey === null) sizeNested(box, 0);
+  }
+}
+
+/** One end of a line, and the strip it will stand off in. */
+type Standoff = { box: Box; side: PortSide; strip: "gutter" | "beside" };
+
+/**
+ * Which strips a line will claim, as `settleLanes` will claim them.
+ *
+ * Read twice — once to size the strips and once to hand them out — and the two
+ * readings have to agree, or a strip is sized for lines that end up elsewhere
+ * while the lines that do arrive are crowded into whatever is left.
+ */
+function standoffs(route: Route<Box>, from: Box, to: Box): Standoff[] {
+  const nested = (box: Box, side: PortSide): Standoff => ({
+    box,
+    side,
+    strip: box.parentKey === null ? "beside" : "gutter",
+  });
+  switch (route.shape) {
+    case "nested":
+      return route.inner ? [nested(route.inner, route.fromSide)] : [];
+    // Both ends: each stands off its own face, so each takes a lane of the
+    // strip it stands off in.
+    case "sibling":
+      return [nested(from, route.fromSide), nested(to, route.toSide)];
+    // A return leaves its machine before it descends (`escapeMachine`), so it
+    // is beside the column wherever its jack was.
+    case "back":
+      return [
+        { box: from, side: route.fromSide, strip: "beside" },
+        { box: to, side: route.toSide, strip: "beside" },
+      ];
+    // A line going forward leaves its jack sideways and stands off nothing.
+    case "forward":
+      return [];
+  }
+}
+
+function gutterStrip(machineKey: string, side: PortSide): string {
+  return `gutter:${machineKey}:${side}`;
+}
+
+/** Wide enough that `spread` can hand out `lines` lanes without closing up. */
+function gutterWidth(lines: number): number {
+  return Math.max(NEST_PAD, LINE_FLOOR + Math.max(0, lines - 1) * LINE_PITCH + NEST_CLEAR);
+}
+
+function crossingGap(lines: number): number {
+  return Math.max(NEST_GAP, CROSS_CLEAR + Math.max(0, lines - 1) * LINE_PITCH);
+}
+
+/**
+ * Where the first column stands, which is however much its returns need.
+ *
+ * Every other left face has a whole column gap to stand off in; the first has
+ * the page margin, and `roomBeside` reads the room off the anchor for exactly
+ * that reason. But reading it is not the same as having it — a hall returning
+ * into three mics put three risers into fourteen pixels, one of them ten from
+ * the edge of the picture. The margin is a strip like any other, so it is sized
+ * like one: the innermost riser stands where a single riser has always stood
+ * and the rest go outward, taking the page with them.
+ */
+function leftMargin(
+  edges: readonly DrawnEdge[],
+  boxes: Map<string, Box>,
+  column: Map<string, number>,
+  forwardIds: ReadonlySet<string>,
+): number {
+  let lines = 0;
+  for (const edge of edges) {
+    const from = boxes.get(edge.from);
+    const to = boxes.get(edge.to);
+    if (!from || !to) continue;
+    const route = routeOf(edge, from, to, boxes, column, forwardIds);
+    for (const stand of standoffs(route, from, to)) {
+      // A nested box escapes to its machine's face, and its machine is in its
+      // column — so the column is the same question either way.
+      if (stand.strip !== "beside" || stand.side !== "left") continue;
+      if ((column.get(stand.box.key) ?? 0) === 0) lines += 1;
+    }
+  }
+  if (lines === 0) return PADDING;
+  // `PADDING` past the outermost, which is what the width and the height
+  // already leave past theirs: every line in the picture is one margin from
+  // the edge of it, and the band tint starts half of one further out.
+  return Math.max(PADDING, ELBOW + (lines - 1) * LINE_PITCH + PADDING);
 }
 
 /**
@@ -1228,15 +1418,42 @@ function packUp(desired: readonly number[], heights: readonly number[]): number[
 
 type PlacedBox = Box & { column: number; row: number; x: number; y: number };
 
+/**
+ * Where a column stands and how wide its slot is.
+ *
+ * The slot is the widest box in the column, so the gap between two columns is
+ * `COL_GAP` wherever you measure it. That is what everything standing off a
+ * face — a return riser most of all — assumes it has to itself, and a machine
+ * widened to hold its own cables would otherwise spend the next column's gap.
+ */
+type Slot = { x: number; width: number; items: readonly string[] };
+
+function columnSlots(
+  columns: readonly string[][],
+  boxes: Map<string, Box>,
+  margin: number,
+): Slot[] {
+  const slots: Slot[] = [];
+  let x = margin;
+  for (const items of columns) {
+    let width = BOX_WIDTH;
+    for (const key of items) width = Math.max(width, boxes.get(key)?.width ?? 0);
+    slots.push({ x, width, items });
+    x += width + COL_GAP;
+  }
+  return slots;
+}
+
 function buildLayout(
   places: Map<string, Place>,
   boxes: Map<string, Box>,
   edges: readonly DrawnEdge[],
-  forward: readonly DrawnEdge[],
+  forwardIds: ReadonlySet<string>,
   column: Map<string, number>,
   columns: readonly string[][],
   y: Map<string, number>,
 ): Layout {
+  const slots = columnSlots(columns, boxes, leftMargin(edges, boxes, column, forwardIds));
   const placed = new Map<string, PlacedBox>();
   const place = (box: Box, x: number, top: number, col: number, row: number) => {
     placed.set(box.key, { ...box, column: col, row, x, y: top });
@@ -1245,17 +1462,17 @@ function buildLayout(
     // cannot push anything out of the box it was given.
     let cursor = top + box.contentTop;
     for (const child of box.children) {
-      place(child, x + NEST_PAD, cursor, col, row);
-      cursor += child.height + NEST_GAP;
+      place(child, x + box.padLeft, cursor, col, row);
+      cursor += child.height + box.gap;
     }
   };
 
-  columns.forEach((items, col) => {
+  slots.forEach((slot, col) => {
     let row = 0;
-    for (const key of items) {
+    for (const key of slot.items) {
       const box = boxes.get(key);
       if (!box) continue;
-      place(box, columnX(col), y.get(key) ?? PADDING, col, row++);
+      place(box, slot.x, y.get(key) ?? PADDING, col, row++);
     }
   });
 
@@ -1281,7 +1498,8 @@ function buildLayout(
         height: box.height,
         ports: box.ports.map((port) => {
           const x = port.side === "right" ? box.x + box.width : box.x;
-          const inset = box.children.length > 0 ? NEST_PAD + LABEL_INSET : LABEL_INSET;
+          const pad = port.side === "right" ? box.padRight : box.padLeft;
+          const inset = box.children.length > 0 ? pad + LABEL_INSET : LABEL_INSET;
           return {
             key: port.key,
             label: port.label,
@@ -1299,7 +1517,7 @@ function buildLayout(
   let bottom = PADDING;
   for (const node of nodes) bottom = Math.max(bottom, node.y + node.height);
 
-  const laid = routeEdges(edges, placed, forward, columns, column, y, bottom);
+  const laid = routeEdges(edges, placed, forwardIds, slots, column, y, bottom);
 
   const frames = computeFrames(places, placed);
   const order = columns.flat();
@@ -1324,7 +1542,7 @@ function buildLayout(
   return {
     nodes,
     edges: laid,
-    bands: computeBands(nodes, columnCount, width),
+    bands: computeBands(nodes, slots, columnCount, width),
     frames,
     columns: columnCount,
     rows: columns.reduce((max, items) => Math.max(max, items.length), 0),
@@ -1335,11 +1553,11 @@ function buildLayout(
 }
 
 /** Is `inner` drawn inside `outer`? */
-function nestedInside(inner: PlacedBox, outer: PlacedBox, placed: Map<string, PlacedBox>): boolean {
+function nestedInside(inner: Box, outer: Box, boxes: Map<string, Box>): boolean {
   let key = inner.parentKey;
   while (key !== null) {
     if (key === outer.key) return true;
-    key = placed.get(key)?.parentKey ?? null;
+    key = boxes.get(key)?.parentKey ?? null;
   }
   return false;
 }
@@ -1399,6 +1617,7 @@ function computeFrames(places: Map<string, Place>, placed: Map<string, PlacedBox
  */
 function computeBands(
   nodes: readonly LayoutNode[],
+  slots: readonly Slot[],
   columnCount: number,
   width: number,
 ): LayoutBand[] {
@@ -1425,8 +1644,13 @@ function computeBands(
 
   const inset = Math.max(0, (COL_GAP - BAND_GUTTER) / 2);
   for (const band of bands) {
-    const left = Math.max(PADDING / 2, columnX(band.fromColumn) - inset);
-    const right = Math.min(width - PADDING / 2, columnX(band.toColumn) + BOX_WIDTH + inset);
+    const first = slots[band.fromColumn];
+    const last = slots[band.toColumn];
+    const left = Math.max(PADDING / 2, (first?.x ?? PADDING) - inset);
+    const right = Math.min(
+      width - PADDING / 2,
+      (last?.x ?? PADDING) + (last?.width ?? BOX_WIDTH) + inset,
+    );
     band.x = left;
     band.width = Math.max(0, right - left);
   }
@@ -1436,20 +1660,28 @@ function computeBands(
 /** Where a long edge crosses the columns in between, in left-to-right order. */
 function waypoints(
   edge: DrawnEdge,
-  columns: readonly string[][],
+  slots: readonly Slot[],
   column: Map<string, number>,
   y: Map<string, number>,
-): Point[] {
+): Waypoint[] {
   const from = column.get(edge.from) ?? 0;
   const to = column.get(edge.to) ?? 0;
-  const points: Point[] = [];
+  const points: Waypoint[] = [];
   for (let col = from + 1; col < to; col++) {
     const key = `dummy:${edge.id}:${col}`;
-    if (!columns[col]?.includes(key)) continue;
-    points.push({ x: columnX(col), y: (y.get(key) ?? PADDING) + DUMMY_HEIGHT / 2 });
+    const slot = slots[col];
+    if (!slot?.items.includes(key)) continue;
+    points.push({
+      x: slot.x,
+      y: (y.get(key) ?? PADDING) + DUMMY_HEIGHT / 2,
+      width: slot.width,
+    });
   }
   return points;
 }
+
+/** A row reserved for one line in a column it only passes through. */
+type Waypoint = Point & { width: number };
 
 /**
  * The four shapes a line can take, decided before any of them is drawn.
@@ -1459,6 +1691,48 @@ function waypoints(
  * have to be told about each other before either is routed.
  */
 type EdgeShape = "nested" | "sibling" | "forward" | "back";
+
+type Route<T> = {
+  shape: EdgeShape;
+  /** The box drawn inside the other one. */
+  inner: T | null;
+  fromSide: PortSide;
+  toSide: PortSide;
+};
+
+/**
+ * Which shape a line takes, decided from the boxes alone.
+ *
+ * Nothing here reads a coordinate, which is what lets `sizeHosts` ask the same
+ * question before anything is placed — a machine has to be sized for the lines
+ * that will run inside it, and it cannot be sized after they are drawn.
+ */
+function routeOf<T extends Box>(
+  edge: DrawnEdge,
+  from: T,
+  to: T,
+  boxes: Map<string, Box>,
+  column: Map<string, number>,
+  forwardIds: ReadonlySet<string>,
+): Route<T> {
+  const fromSide = sideOf(from, edge.fromPort, "right");
+  const toSide = sideOf(to, edge.toPort, "left");
+  const inner = nestedInside(from, to, boxes) ? from : nestedInside(to, from, boxes) ? to : null;
+  const fromColumn = column.get(from.key) ?? 0;
+  const toColumn = column.get(to.key) ?? 0;
+  // A device selection joins two jacks of one face; anything else between an
+  // app and its machine — a capture between two apps, most of all — is a
+  // sibling, and crosses between the boxes rather than running up the gutter.
+  const shape: EdgeShape =
+    inner && fromSide === toSide
+      ? "nested"
+      : fromColumn === toColumn
+        ? "sibling"
+        : forwardIds.has(edge.id) && toColumn > fromColumn
+          ? "forward"
+          : "back";
+  return { shape, inner, fromSide, toSide };
+}
 
 type Plan = {
   edge: DrawnEdge;
@@ -1499,14 +1773,13 @@ type Plan = {
 function routeEdges(
   edges: readonly DrawnEdge[],
   placed: Map<string, PlacedBox>,
-  forward: readonly DrawnEdge[],
-  columns: readonly string[][],
+  forwardIds: ReadonlySet<string>,
+  slots: readonly Slot[],
   column: Map<string, number>,
   y: Map<string, number>,
   bottom: number,
 ): LayoutEdge[] {
   const rows = spaceRows(edges, placed);
-  const forwardIds = new Set(forward.map((edge) => edge.id));
 
   const plans: Plan[] = [];
   for (const edge of edges) {
@@ -1515,26 +1788,11 @@ function routeEdges(
     if (!from || !to) continue;
     const a = anchorOf(from, edge.fromPort, "right", rows.get(rowKey(edge, edge.from)));
     const b = anchorOf(to, edge.toPort, "left", rows.get(rowKey(edge, edge.to)));
-    const inner = nestedInside(from, to, placed)
-      ? from
-      : nestedInside(to, from, placed)
-        ? to
-        : null;
-    // A device selection joins two jacks of one face; anything else between an
-    // app and its machine — a capture between two apps, most of all — is a
-    // sibling, and crosses between the boxes rather than running up the gutter.
-    const shape: EdgeShape =
-      inner && a.side === b.side
-        ? "nested"
-        : from.column === to.column
-          ? "sibling"
-          : forwardIds.has(edge.id) && to.column > from.column
-            ? "forward"
-            : "back";
+    const { shape, inner } = routeOf(edge, from, to, placed, column, forwardIds);
     plans.push({ edge, from, to, a, b, shape, inner, lane: 0, out: ELBOW, into: ELBOW, cross: 0 });
   }
 
-  settleLanes(plans, bottom);
+  settleLanes(plans, placed, bottom);
 
   return plans.map((plan) => ({
     id: plan.edge.id,
@@ -1547,13 +1805,13 @@ function routeEdges(
     linkId: plan.edge.linkId,
     sourceIds: plan.edge.sourceIds,
     back: plan.shape === "back",
-    points: pointsOf(plan, columns, column, y),
+    points: pointsOf(plan, slots, column, y),
   }));
 }
 
 function pointsOf(
   plan: Plan,
-  columns: readonly string[][],
+  slots: readonly Slot[],
   column: Map<string, number>,
   y: Map<string, number>,
 ): Point[] {
@@ -1564,7 +1822,7 @@ function pointsOf(
     case "sibling":
       return routeSibling(a, b, plan.cross, plan.out, plan.into);
     case "forward":
-      return routeForward(a, b, from, to, waypoints(plan.edge, columns, column, y));
+      return routeForward(a, b, from, to, waypoints(plan.edge, slots, column, y));
     case "back":
       return routeBack(a, b, plan.lane, plan.out, plan.into);
   }
@@ -1616,6 +1874,20 @@ function spaceRows(
   return rows;
 }
 
+/**
+ * Where a line with no jack meets a face: between two rows, never on one.
+ *
+ * The middle of a face lands wherever the box's height happens to put it, which
+ * for a join was six pixels off one of its own jacks — so its coupling into the
+ * meeting and the cable out of the jack below left the box as a pair of lines
+ * running together. Halfway between two rows is the one offset on a face that
+ * no jack can be at, and it is a full pitch from the two either side of it.
+ */
+function betweenRows(height: number): number {
+  const rows = Math.max(0, Math.round((height / 2 - HEADER_HEIGHT) / PORT_PITCH));
+  return HEADER_HEIGHT + rows * PORT_PITCH;
+}
+
 /** Where the other end of this line sits, which is what orders a room's rows. */
 function farSide(edge: DrawnEdge, near: string, placed: Map<string, PlacedBox>): number {
   const isFrom = edge.from === near;
@@ -1649,7 +1921,7 @@ type Claim = {
  * stay in the order the reader last saw them; everything else is derived from
  * where the line already is.
  */
-function settleLanes(plans: readonly Plan[], bottom: number): void {
+function settleLanes(plans: readonly Plan[], placed: Map<string, PlacedBox>, bottom: number): void {
   const claims: Claim[] = [];
   let lane = 0;
 
@@ -1660,10 +1932,10 @@ function settleLanes(plans: readonly Plan[], bottom: number): void {
       // the lanes exactly as two leaving one room collide on the way down.
       // Deeper lane, further out — then no riser crosses a lane it is not in.
       claims.push(
-        beside(plan.a, plan.lane, (offset) => {
+        escapeMachine(plan.from, plan.a, plan.lane, placed, (offset) => {
           plan.out = offset;
         }),
-        beside(plan.b, plan.lane, (offset) => {
+        escapeMachine(plan.to, plan.b, plan.lane, placed, (offset) => {
           plan.into = offset;
         }),
       );
@@ -1672,7 +1944,7 @@ function settleLanes(plans: readonly Plan[], bottom: number): void {
 
     if (plan.shape === "nested") {
       claims.push(
-        gutter(plan.inner, plan.a.side, plan.a.y, (offset) => {
+        gutter(plan.inner, plan.a.side, plan.a.y, placed, (offset) => {
           plan.out = offset;
         }),
       );
@@ -1680,28 +1952,69 @@ function settleLanes(plans: readonly Plan[], bottom: number): void {
     }
 
     if (plan.shape !== "sibling") continue;
-    // Two apps on one machine run in its gutters; two boxes standing in one
-    // column have the whole column gap.
     claims.push(
-      plan.from.parentKey !== null
-        ? gutter(plan.from, plan.a.side, plan.a.y, (offset) => {
-            plan.out = offset;
-          })
-        : beside(plan.a, plan.a.y, (offset) => {
-            plan.out = offset;
-          }),
-      plan.to.parentKey !== null
-        ? gutter(plan.to, plan.b.side, plan.b.y, (offset) => {
-            plan.into = offset;
-          })
-        : beside(plan.b, plan.b.y, (offset) => {
-            plan.into = offset;
-          }),
+      standoff(plan.from, plan.a, plan.a.y, placed, (offset) => {
+        plan.out = offset;
+      }),
+      standoff(plan.to, plan.b, plan.b.y, placed, (offset) => {
+        plan.into = offset;
+      }),
     );
   }
 
   settle(claims);
   crossings(plans);
+}
+
+/**
+ * The strip a line standing off a face runs in: its machine's gutter if it has
+ * one, and the column gap otherwise.
+ */
+function standoff(
+  box: PlacedBox,
+  anchor: Anchor,
+  order: number,
+  placed: Map<string, PlacedBox>,
+  take: (offset: number) => void,
+): Claim {
+  if (box.parentKey === null) return beside(anchor, order, take);
+  return gutter(box, anchor.side, order, placed, take);
+}
+
+/**
+ * A return leaving a nested box: out of the machine first, then down.
+ *
+ * A gutter is a strip inside one machine, and a return path is not going
+ * anywhere inside it — it descends the whole picture. Standing it off the app's
+ * own face left it running down through its machine, and worse, made it the
+ * only line in a strip nothing else could claim: two returns into two machines
+ * standing in one column were each alone in their own gutter, at the same
+ * offset, at the same x, which is one line on screen. Off the machine's face
+ * they are in the strip beside the column, which every other riser there is
+ * claiming too, so they are handed lanes like everything else.
+ */
+function escapeMachine(
+  box: PlacedBox,
+  anchor: Anchor,
+  order: number,
+  placed: Map<string, PlacedBox>,
+  take: (offset: number) => void,
+): Claim {
+  const root = rootOf(box, placed);
+  const face = anchor.side === "right" ? root.x + root.width : root.x;
+  const inset = Math.abs(face - anchor.x);
+  return beside({ ...anchor, x: face }, order, (offset) => take(offset + inset));
+}
+
+/** The top-level box a line's end is drawn inside, which is itself for most. */
+function rootOf(box: PlacedBox, placed: Map<string, PlacedBox>): PlacedBox {
+  let current = box;
+  while (current.parentKey !== null) {
+    const parent = placed.get(current.parentKey);
+    if (!parent) break;
+    current = parent;
+  }
+  return current;
 }
 
 /** A line standing off a face, in the strip beside it. */
@@ -1711,24 +2024,34 @@ function beside(anchor: Anchor, order: number, take: (offset: number) => void): 
     order,
     base: ELBOW,
     room: roomBeside(anchor),
-    pitch: RISER_PITCH,
+    pitch: LINE_PITCH,
     take,
   };
 }
 
-/** A line running in the gutter between an app's border and its machine's. */
+/**
+ * A line running in the gutter between an app's border and its machine's.
+ *
+ * The gutter is as wide as the lines in it need (`sizeHosts`), so `room` is
+ * read off the machine rather than assumed: the lines then come out one pitch
+ * apart instead of packed into whatever the gutter happened to be.
+ */
 function gutter(
   inner: PlacedBox | null,
   side: PortSide,
   order: number,
+  placed: Map<string, PlacedBox>,
   take: (offset: number) => void,
 ): Claim {
+  const machineKey = inner?.parentKey ?? "";
+  const machine = placed.get(machineKey);
+  const pad = machine ? (side === "right" ? machine.padRight : machine.padLeft) : NEST_PAD;
   return {
-    strip: `gutter:${inner?.parentKey ?? ""}:${side}`,
+    strip: gutterStrip(machineKey, side),
     order,
-    base: NEST_PAD / 2,
-    room: NEST_PAD - 3,
-    pitch: GUTTER_PITCH,
+    base: pad / 2,
+    room: pad - NEST_CLEAR,
+    pitch: LINE_PITCH,
     take,
   };
 }
@@ -1803,7 +2126,10 @@ function crossings(plans: readonly Plan[]): void {
     const below = above === first.from ? first.to : first.from;
     const gap = below.y - (above.y + above.height);
     const middle = above.y + above.height + Math.max(0, gap) / 2;
-    const step = Math.min(CROSS_PITCH, Math.max(0, gap - 6) / Math.max(1, list.length - 1));
+    const step = Math.min(
+      LINE_PITCH,
+      Math.max(0, gap - CROSS_CLEAR) / Math.max(1, list.length - 1),
+    );
     const ordered = [...list].sort(
       (left, right) => left.a.y - right.a.y || compare(left.edge.id, right.edge.id),
     );
@@ -1814,6 +2140,15 @@ function crossings(plans: readonly Plan[]): void {
 }
 
 type Anchor = { x: number; y: number; side: PortSide };
+
+function portOf(box: Box, portKey: string | null): BoxPort | undefined {
+  return portKey === null ? undefined : box.ports.find((entry) => entry.key === portKey);
+}
+
+/** Which face of its box a line leaves by: its jack's, or the one it is given. */
+function sideOf(box: Box, portKey: string | null, fallback: PortSide): PortSide {
+  return portOf(box, portKey)?.side ?? fallback;
+}
 
 /**
  * Where a line meets a box: the jack it names, or the row it was given.
@@ -1828,11 +2163,11 @@ function anchorOf(
   fallback: PortSide,
   row?: number,
 ): Anchor {
-  const port = portKey === null ? undefined : box.ports.find((entry) => entry.key === portKey);
+  const port = portOf(box, portKey);
   if (!port) {
     return {
       x: fallback === "right" ? box.x + box.width : box.x,
-      y: box.y + (row ?? box.height / 2),
+      y: box.y + (row ?? betweenRows(box.height)),
       side: fallback,
     };
   }
@@ -1851,7 +2186,13 @@ function anchorOf(
  * the wrong face of its box. Rather than draw the jack on a side it does not
  * belong on, the cable leaves the jack properly and loops around the box.
  */
-function routeForward(a: Anchor, b: Anchor, from: PlacedBox, to: PlacedBox, via: Point[]): Point[] {
+function routeForward(
+  a: Anchor,
+  b: Anchor,
+  from: PlacedBox,
+  to: PlacedBox,
+  via: Waypoint[],
+): Point[] {
   const points: Point[] = [{ x: a.x, y: a.y }];
 
   if (a.side === "right") {
@@ -1866,7 +2207,7 @@ function routeForward(a: Anchor, b: Anchor, from: PlacedBox, to: PlacedBox, via:
   }
 
   for (const point of via) {
-    points.push({ x: point.x, y: point.y }, { x: point.x + BOX_WIDTH, y: point.y });
+    points.push({ x: point.x, y: point.y }, { x: point.x + point.width, y: point.y });
   }
 
   if (b.side === "left") {
