@@ -150,6 +150,49 @@ test("reports a loop closed through a second join of the same meeting", async ({
   await expect(ruleIds(page)).resolves.not.toContain("acoustic-feedback-loop");
 });
 
+/**
+ * §12.1's defect, one document at a time.
+ *
+ * The port templates made the hybrid layout writable; nothing makes it the one
+ * that gets written. A second capture landing on a strip that already has a
+ * feed is one drag away, and both the drag and the cable form allow it on
+ * purpose — the picture is the wiring surface and the linter is the authority.
+ */
+test.describe("two things on one source", () => {
+  test("reports the strip, and splitting it makes the meeting separable", async ({ page }) => {
+    await page.goto(setupUrl("e2e_setup_shared_strip"));
+
+    const found = diagnostic(page, "shared-source-strip");
+    await expect(found).toHaveAttribute("data-severity", "warn");
+    await expect(found).toContainText("E2E 会場の音");
+
+    await saving(page, () =>
+      found.getByRole("button", { name: /入力ごとにソースを分ける/ }).click(),
+    );
+
+    await expect(diagnostic(page, "shared-source-strip")).toHaveCount(0);
+    // Nothing traded for it: the stream must not have gone quiet on the way.
+    expect(await ruleIds(page)).not.toContain("no-audio-to-stream");
+
+    // The payoff is in the matrix. Two rows, both still on PROGRAM exactly as
+    // the shared one was — the new row is where MONITOR can now be ticked for
+    // the meeting alone, which is the thing that could not be said before.
+    await page.goto(setupUrl("e2e_setup_shared_strip", "routing"));
+    await expect(page.getByRole("button", { name: "E2E 会場の音 → PROGRAM" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.getByRole("button", { name: "音声ソース → PROGRAM" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.getByRole("button", { name: "音声ソース → MONITOR" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+});
+
 test("reports a stream with no audio reaching it", async ({ page }) => {
   await page.goto(setupUrl("e2e_setup_silent"));
 

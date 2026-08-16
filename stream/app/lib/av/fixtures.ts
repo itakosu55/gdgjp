@@ -872,6 +872,64 @@ export function hybridMonitorMix(): SetupDoc {
 }
 
 /**
+ * The hall and the meeting on one row of OBS's mixer.
+ *
+ * The same rig as `hybridMonitorMix`, written the way it gets written when
+ * nobody adds a second source: the mixer's USB return is the strip's device
+ * selection and the Meet window is captured onto the very same strip. Nothing
+ * is broken yet — everything is on PROGRAM and the room is quiet — which is
+ * exactly the point. The moment anyone ticks MONITOR to let the room hear the
+ * remote guest, the hall mics go into the room with them, and the only fixes
+ * the linter can offer for the critical that follows make the event worse
+ * (§12.1). So it is worth saying while it is still cheap.
+ */
+export function sharedSourceStrip(): SetupDoc {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      { id: "sp_hall", kind: "acoustic", label: "メインホール" },
+      { id: "sp_mtg", kind: "transport", label: "登壇 Meet", meetingKey: "meet-shared" },
+    ],
+    nodes: [
+      { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+      { id: "n_mixer", deviceId: "d_mixer", spaceId: "sp_hall" },
+      { id: "n_speaker", deviceId: "d_speaker", spaceId: "sp_hall" },
+      { id: "n_pc", deviceId: "d_pc", spaceId: "sp_hall" },
+      {
+        id: "n_obs",
+        modelId: "m_obs",
+        hostNodeId: "n_pc",
+        ports: [{ key: "audio_src:1", template: "audio_src", label: "会場の音" }],
+        assignments: [
+          { port: "audio_src:1", hostPort: "usb_in" },
+          { port: "monitor_out", hostPort: "usb_out" },
+        ],
+      },
+      {
+        id: "n_join",
+        modelId: "m_meet",
+        hostNodeId: "n_pc",
+        spaceId: "sp_mtg",
+        assignments: [{ port: "mic_in", hostPort: "usb_in" }],
+      },
+    ],
+    links: [
+      { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+      { id: "l2", from: ["n_mixer", "usb_send"], to: ["n_pc", "usb_in"] },
+      // The Meet window, captured onto the strip the hall is already using.
+      { id: "l5", from: ["n_join", "spk_out"], to: ["n_obs", "audio_src:1"] },
+      { id: "l8", from: ["n_pc", "usb_out"], to: ["n_mixer", "usb_in"] },
+      { id: "l9", from: ["n_mixer", "main_out"], to: ["n_speaker", "in"] },
+    ],
+    routing: [
+      { nodeId: "n_mixer", inPort: "ch1", bus: "usb" },
+      { nodeId: "n_mixer", inPort: "usb_in", bus: "main" },
+      { nodeId: "n_obs", inPort: "audio_src:1", bus: "program" },
+    ],
+  };
+}
+
+/**
  * The opening video plays, and only the remote participants hear silence.
  *
  * §12.6 calls this one of the commonest hybrid accidents there is, and until a

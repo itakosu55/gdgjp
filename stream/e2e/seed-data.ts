@@ -316,6 +316,54 @@ function hybridDoc() {
   };
 }
 
+/**
+ * The same rig with the meeting captured onto the hall's own strip.
+ *
+ * How it gets written when nobody adds a second source. Nothing is broken yet —
+ * that is the point of catching it here rather than after somebody ticks
+ * MONITOR to let the room hear the remote guest and takes the hall mics into
+ * the room with them (§12.1).
+ */
+function sharedStripDoc() {
+  return {
+    schemaVersion: 1,
+    spaces: [
+      HALL,
+      { id: "sp2", kind: "transport", label: "E2E 共有ストリップ Meet", meetingKey: "e2e-shared" },
+    ],
+    nodes: [
+      { id: "n1", deviceId: "e2e_dev_mic", spaceId: "sp1" },
+      { id: "n2", deviceId: "e2e_dev_mixer", spaceId: "sp1" },
+      { id: "n3", deviceId: "e2e_dev_speaker", spaceId: "sp1" },
+      { id: "n4", deviceId: "e2e_dev_pc", spaceId: "sp1" },
+      {
+        id: "n5",
+        modelId: MODELS.obs,
+        hostNodeId: "n4",
+        ports: [{ key: "audio_src:1", template: "audio_src", label: "E2E 会場の音" }],
+        assignments: [
+          { port: "audio_src:1", hostPort: "usb_in" },
+          { port: "monitor_out", hostPort: "usb_out" },
+        ],
+      },
+      { id: "n6", modelId: MODELS.meet, hostNodeId: "n4", spaceId: "sp2" },
+    ],
+    links: [
+      { id: "l1", from: ["n1", "out"], to: ["n2", "ch1"] },
+      { id: "l2", from: ["n2", "usb_send"], to: ["n4", "usb_in"] },
+      // Onto the strip the hall is already using, rather than a row of its own.
+      { id: "l4", from: ["n6", "spk_out"], to: ["n5", "audio_src:1"] },
+      { id: "l6", from: ["n4", "usb_out"], to: ["n2", "usb_in"] },
+      { id: "l7", from: ["n2", "main_out"], to: ["n3", "in"] },
+    ],
+    routing: [
+      { nodeId: "n2", inPort: "ch1", bus: "usb" },
+      { nodeId: "n2", inPort: "usb_in", bus: "main" },
+      { nodeId: "n5", inPort: "audio_src:1", bus: "program" },
+    ],
+  };
+}
+
 const EMPTY_DOC = { schemaVersion: 1, spaces: [], nodes: [], links: [], routing: [] };
 
 export const SETUPS = [
@@ -399,6 +447,13 @@ export const SETUPS = [
     eventId: EVENT.id,
     name: "E2E ソース追加",
     doc: hybridDoc(),
+  },
+  // Mutated: the shared strip is split from the dock.
+  {
+    id: "e2e_setup_shared_strip",
+    eventId: EVENT.id,
+    name: "E2E ソース共有",
+    doc: sharedStripDoc(),
   },
   // Lives on the event whose gear list event.spec.ts is allowed to change.
   {

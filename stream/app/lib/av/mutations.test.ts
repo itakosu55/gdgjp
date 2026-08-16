@@ -133,10 +133,16 @@ describe("applyFix", () => {
     // the AI repair loop clears every howling finding with one checkbox.
     expect(canApplyFix({ kind: "declare-reinforced", spaceId: "sp_hall" })).toBe(false);
     expect(canApplyFix({ kind: "set-coupling", nodeId: "n_mic", coupling: "isolated" })).toBe(true);
+    // Same line: which row a signal sits in is the document's business.
+    expect(canApplyFix({ kind: "split-source", nodeId: "n_obs", portKey: "audio_src:1" })).toBe(
+      true,
+    );
   });
 
   it("leaves the document untouched for a fix it cannot decide", () => {
-    expect(applyFix(howling, { kind: "assign-space", nodeId: "n_mic" })).toEqual(howling);
+    expect(applyFix(howling, { kind: "assign-space", nodeId: "n_mic" }, testContext())).toEqual(
+      howling,
+    );
   });
 
   // This is the loop the AI phase will run: propose, lint, repair, lint again.
@@ -149,7 +155,7 @@ describe("applyFix", () => {
     const fix = loop?.fixes?.find((candidate) => candidate.kind === "disable-route");
     if (!fix) throw new Error("expected a disable-route fix");
 
-    const after = lint(applyFix(howling, fix), ctx);
+    const after = lint(applyFix(howling, fix, ctx), ctx);
     expect(after.map((d) => d.ruleId)).not.toContain("acoustic-feedback-loop");
   });
 
@@ -159,7 +165,7 @@ describe("applyFix", () => {
     const fix = loop?.fixes?.find((candidate) => candidate.kind === "set-coupling");
     if (!fix) throw new Error("expected a set-coupling fix");
 
-    const after = lint(applyFix(howling, fix), ctx);
+    const after = lint(applyFix(howling, fix, ctx), ctx);
     expect(after.map((d) => d.ruleId)).not.toContain("acoustic-feedback-loop");
   });
 });
@@ -246,30 +252,27 @@ describe("muting one jack", () => {
   };
 
   it("adds the port rather than isolating the whole machine", () => {
-    const next = applyFix(laptop, {
-      kind: "set-coupling",
-      nodeId: "n_laptop",
-      coupling: "isolated",
-      portKey: "builtin_mic",
-    });
+    const next = applyFix(
+      laptop,
+      { kind: "set-coupling", nodeId: "n_laptop", coupling: "isolated", portKey: "builtin_mic" },
+      testContext(),
+    );
 
     expect(next.nodes[0]?.isolatedPorts).toEqual(["builtin_mic"]);
     expect(next.nodes[0]?.coupling).toBeUndefined();
   });
 
   it("accumulates instead of replacing, so muting the speaker keeps the mic muted", () => {
-    const once = applyFix(laptop, {
-      kind: "set-coupling",
-      nodeId: "n_laptop",
-      coupling: "isolated",
-      portKey: "builtin_mic",
-    });
-    const twice = applyFix(once, {
-      kind: "set-coupling",
-      nodeId: "n_laptop",
-      coupling: "isolated",
-      portKey: "builtin_spk",
-    });
+    const once = applyFix(
+      laptop,
+      { kind: "set-coupling", nodeId: "n_laptop", coupling: "isolated", portKey: "builtin_mic" },
+      testContext(),
+    );
+    const twice = applyFix(
+      once,
+      { kind: "set-coupling", nodeId: "n_laptop", coupling: "isolated", portKey: "builtin_spk" },
+      testContext(),
+    );
 
     expect(twice.nodes[0]?.isolatedPorts).toEqual(["builtin_mic", "builtin_spk"]);
   });
@@ -404,6 +407,88 @@ describe("sources", () => {
       template: "browser_audio",
       sourceId: "s1",
     });
+  });
+
+  // The new row copies the row it was split from rather than the model's
+  // defaults. A strip somebody has already taken off PROGRAM must not put its
+  // feed back on the stream just because it moved rows.
+  it("splits a strip onto the buses it is actually on", () => {
+    const shared = doc({
+      nodes: [
+        { id: "n_pc", deviceId: "d_pc" },
+        {
+          id: "n_obs",
+          modelId: "m_obs",
+          hostNodeId: "n_pc",
+          ports: [{ key: "audio_src:1", template: "audio_src", label: "会場の音" }],
+          assignments: [{ port: "audio_src:1", hostPort: "usb_in" }],
+        },
+        { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc" },
+      ],
+      links: [{ id: "l5", from: ["n_join", "spk_out"], to: ["n_obs", "audio_src:1"] }],
+      routing: [{ nodeId: "n_obs", inPort: "audio_src:1", bus: "monitor" }],
+    });
+
+    const next = applyFix(
+      shared,
+      { kind: "split-source", nodeId: "n_obs", portKey: "audio_src:1" },
+      testContext(),
+    );
+
+    expect(next.routing).toEqual([
+      { nodeId: "n_obs", inPort: "audio_src:1", bus: "monitor" },
+      { nodeId: "n_obs", inPort: "audio_src:2", bus: "monitor" },
+    ]);
+    // The device selection is the strip's own input, so the capture is what moved.
+    expect(next.links[0]?.to).toEqual(["n_obs", "audio_src:2"]);
+  });
+
+  it("splits a paired source as a pair, and keeps the first cable where it is", () => {
+    const shared = doc({
+      nodes: [
+        { id: "n_pc", deviceId: "d_pc" },
+        {
+          id: "n_obs",
+          modelId: "m_obs",
+          hostNodeId: "n_pc",
+          ports: [
+            { key: "browser_audio:1", template: "browser_audio", label: "Meet", sourceId: "s1" },
+            { key: "browser_video:1", template: "browser_video", label: "Meet", sourceId: "s1" },
+          ],
+        },
+        { id: "n_join", modelId: "m_meet", hostNodeId: "n_pc" },
+        { id: "n_join2", modelId: "m_vdo", hostNodeId: "n_pc" },
+      ],
+      links: [
+        { id: "l1", from: ["n_join", "spk_out"], to: ["n_obs", "browser_audio:1"] },
+        { id: "l2", from: ["n_join2", "spk_out"], to: ["n_obs", "browser_audio:1"] },
+      ],
+      routing: [
+        { nodeId: "n_obs", inPort: "browser_audio:1", bus: "program" },
+        { nodeId: "n_obs", inPort: "browser_video:1", bus: "program" },
+      ],
+    });
+
+    const next = applyFix(
+      shared,
+      { kind: "split-source", nodeId: "n_obs", portKey: "browser_audio:1" },
+      testContext(),
+    );
+    const obs = next.nodes.find((node) => node.id === "n_obs");
+    const created = obs?.ports?.filter((port) => port.key.endsWith(":2")) ?? [];
+
+    // A browser source is a picture and a sound. Half of one is not a thing
+    // anybody asked for, so the split makes a whole second source (§12.4).
+    expect(obs?.ports?.map((port) => port.key)).toEqual([
+      "browser_audio:1",
+      "browser_video:1",
+      "browser_audio:2",
+      "browser_video:2",
+    ]);
+    expect(created.map((port) => port.sourceId)).toEqual(["s2", "s2"]);
+    // No device selection here, so the first cable keeps the strip.
+    expect(next.links.find((link) => link.id === "l1")?.to).toEqual(["n_obs", "browser_audio:1"]);
+    expect(next.links.find((link) => link.id === "l2")?.to).toEqual(["n_obs", "browser_audio:2"]);
   });
 
   // The `clean` whitelist trap again: a node's sources are the third field that

@@ -15,6 +15,14 @@ export type Fix =
   /** With `portKey`, mutes that one jack; without, the whole node. */
   | { kind: "set-coupling"; nodeId: string; coupling: "isolated"; portKey?: string }
   | { kind: "assign-space"; nodeId: string }
+  /**
+   * Give each thing arriving at one source a row of its own.
+   *
+   * A source is one row of a broadcast app's mixer, so two feeds sharing an
+   * instance can only ever be sent to the same buses. §12.1 is the story of what
+   * that costs, and this is the operation that was missing from it.
+   */
+  | { kind: "split-source"; nodeId: string; portKey: string }
   | { kind: "remove-link"; linkId: string }
   | { kind: "add-device"; category: DeviceCategory; reason: string }
   | { kind: "declare-reinforced"; spaceId: string };

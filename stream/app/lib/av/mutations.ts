@@ -1,5 +1,7 @@
 import type { Fix } from "./diagnostics";
-import { isTemplate, sourceGroup } from "./ports";
+import type { CatalogLookup } from "./graph";
+import { modelOf } from "./graph";
+import { isTemplate, newSource, sourceGroup } from "./ports";
 import type {
   NodePort,
   PortRef,
@@ -274,12 +276,53 @@ export function sourceRoutes(
   );
 }
 
-/** Fixes a person (or, later, the AI repair loop) can apply without choosing anything. */
-export function canApplyFix(fix: Fix): boolean {
-  return fix.kind === "disable-route" || fix.kind === "set-coupling" || fix.kind === "remove-link";
+/**
+ * The cells a source split off another one starts with: the ones the row it
+ * came from is on.
+ *
+ * Emphatically **not** the model's defaults. A strip somebody has already taken
+ * off PROGRAM must not put its feed back on the stream just because it moved
+ * rows — the fix changes which row a signal sits in and nothing else, which is
+ * what makes it safe to apply without asking (§4.3).
+ */
+function splitRoutes(
+  doc: SetupDoc,
+  node: SetupNode,
+  portKey: string,
+  created: readonly NodePort[],
+): SetupRoute[] {
+  const group = new Set(sourceGroup(node, portKey));
+  const from = new Map(
+    (node.ports ?? [])
+      .filter((port) => group.has(port.key))
+      .map((port) => [port.template, port.key] as const),
+  );
+  return created.flatMap((port) => {
+    const original = from.get(port.template);
+    if (!original) return [];
+    return doc.routing
+      .filter((route) => route.nodeId === node.id && route.inPort === original)
+      .map((route) => ({ nodeId: node.id, inPort: port.key, bus: route.bus }));
+  });
 }
 
-export function applyFix(doc: SetupDoc, fix: Fix): SetupDoc {
+/** Fixes a person (or, later, the AI repair loop) can apply without choosing anything. */
+export function canApplyFix(fix: Fix): boolean {
+  return (
+    fix.kind === "disable-route" ||
+    fix.kind === "set-coupling" ||
+    fix.kind === "remove-link" ||
+    fix.kind === "split-source"
+  );
+}
+
+/**
+ * `catalog` is here for `split-source` alone, which has to know what kinds of
+ * source the model declares before it can make another one. It is the same
+ * lookup `lint` takes, so the repair loop — generate → lint → apply fixes → lint
+ * again — carries one catalog through all of it.
+ */
+export function applyFix(doc: SetupDoc, fix: Fix, catalog: CatalogLookup): SetupDoc {
   switch (fix.kind) {
     case "disable-route":
       return {
@@ -309,6 +352,54 @@ export function applyFix(doc: SetupDoc, fix: Fix): SetupDoc {
     }
     case "remove-link":
       return applyOperation(doc, { kind: "remove-link", linkId: fix.linkId });
+
+    /**
+     * One row per thing arriving at it.
+     *
+     * The strip keeps whichever feed is most plausibly its own — a device
+     * selection if there is one, the first cable otherwise — and everything else
+     * moves onto a fresh instance of the same template. A paired template moves
+     * as a pair, because half a browser source is not a thing anyone asked for.
+     */
+    case "split-source": {
+      const node = doc.nodes.find((entry) => entry.id === fix.nodeId);
+      const model = node ? modelOf(node, catalog) : undefined;
+      const instance = (node?.ports ?? []).find((port) => port.key === fix.portKey);
+      if (!node || !model || !instance) return doc;
+
+      const feeding = doc.links.filter(
+        (link) => link.to[0] === fix.nodeId && link.to[1] === fix.portKey,
+      );
+      const held = (node.assignments ?? []).some((entry) => entry.port === fix.portKey);
+      const moving = held ? feeding : feeding.slice(1);
+
+      let next = doc;
+      for (const link of moving) {
+        // Re-read the node each time round: `newSource` numbers an instance from
+        // the highest key already used, so two sources made in one act have to
+        // see each other or the second lands on the first's key.
+        const current = next.nodes.find((entry) => entry.id === fix.nodeId);
+        if (!current) break;
+        const created = newSource(model, current, instance.template);
+        const moved = created.find((port) => port.template === instance.template);
+        if (!moved) break;
+
+        next = applyOperation(next, {
+          kind: "add-source",
+          nodeId: fix.nodeId,
+          ports: created,
+          routes: splitRoutes(next, current, fix.portKey, created),
+        });
+        next = {
+          ...next,
+          links: next.links.map((entry) =>
+            entry.id === link.id ? { ...entry, to: [fix.nodeId, moved.key] as PortRef } : entry,
+          ),
+        };
+      }
+      return next;
+    }
+
     // `assign-space` and `add-device` need a human to pick which space or which
     // piece of gear, so they are surfaced as guidance rather than applied.
     case "assign-space":

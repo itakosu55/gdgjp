@@ -207,6 +207,18 @@ export function buildGraph(doc: SetupDoc, catalog: CatalogLookup): BuiltGraph {
 }
 
 /**
+ * Whichever of the two references a node carries, resolved to a model.
+ *
+ * `resolveNode` below wants the `Device` as well and reports what it could not
+ * find, so it does not go through this — but everything that only needs "what
+ * kind of thing is this node" does, and there is one answer to that question.
+ */
+export function modelOf(node: SetupNode, catalog: CatalogLookup): DeviceModel | undefined {
+  const modelId = node.deviceId ? catalog.devices.get(node.deviceId)?.modelId : node.modelId;
+  return modelId ? catalog.models.get(modelId) : undefined;
+}
+
+/**
  * A node names either a unit in the ledger or, for software, a model directly.
  * Both roads end at a `DeviceModel`; only the ledger road has a `Device`.
  */

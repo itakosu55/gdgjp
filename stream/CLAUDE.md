@@ -98,6 +98,15 @@ Three ideas carry the design:
   renumbered — the document is a single JSON column and `links`/`routing` name those keys. A
   default route naming a template follows every instance of it (`sourceRoutes` in `mutations.ts`),
   and `add-node` seeds one instance of each *unpaired* template.
+- **One instance is one row, and one row can only be sent one place.** `shared-source-strip`
+  (warn) counts the cables, captures and device selections arriving at an instance and reports the
+  second (§12.3.2). The document is not broken yet — that is why it is a warning — but §12.1 is
+  what it costs the day somebody ticks MONITOR on that row. Scoped to instances: two cables into a
+  mixer channel really do share a fader, and there is no "make another one" to offer. Its
+  `split-source` fix moves every feed after the first onto a fresh instance (a pair moves as a
+  pair) and **copies the original row's matrix cells, never the model's defaults** — a strip
+  already taken off PROGRAM must not go back on the stream because it changed rows. `applyFix`
+  takes a `CatalogLookup` for this, the same lookup `lint` takes.
 - **A source is a jack that hears the room, or a port with `DeviceModelPort.origin`** (BGM, a video
   file). `sourcesOf` in `rules/coverage.ts` is the single set all three audience questions are
   asked of — PROGRAM (`no-audio-to-stream`), the meeting (`source-not-reaching-remote`) and the

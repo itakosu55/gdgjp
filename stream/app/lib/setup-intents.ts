@@ -1,5 +1,6 @@
 import type { Fix } from "~/lib/av/diagnostics";
 import type { CatalogLookup } from "~/lib/av/graph";
+import { modelOf } from "~/lib/av/graph";
 import { applyFix, applyOperation, defaultRoutesFor, sourceRoutes } from "~/lib/av/mutations";
 import { PLACE_KINDS } from "~/lib/av/places";
 import { initialPorts, newSource, resolvePorts } from "~/lib/av/ports";
@@ -391,7 +392,7 @@ export function applyIntent(doc: SetupDoc, form: FormData, catalog: IntentCatalo
       } catch {
         return { kind: "error", error: "修正内容を読み取れませんでした。" };
       }
-      return ok(applyFix(doc, fix));
+      return ok(applyFix(doc, fix, catalog));
     }
 
     case "replace-doc": {
@@ -421,12 +422,6 @@ function newLinkId(doc: SetupDoc): string {
     "l",
     doc.links.map((link) => link.id),
   );
-}
-
-/** Whichever of the two references a node carries, resolved to a model. */
-function modelOf(node: SetupDoc["nodes"][number], catalog: IntentCatalog): DeviceModel | undefined {
-  const modelId = node.deviceId ? catalog.devices.get(node.deviceId)?.modelId : node.modelId;
-  return modelId ? catalog.models.get(modelId) : undefined;
 }
 
 /** A port's direction. Resolved, so a source of a broadcast app is found too. */

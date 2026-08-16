@@ -42,6 +42,7 @@ const FIX_LABEL: Record<string, string> = {
   "disable-route": "この経路を切る",
   "set-coupling": "この機材を isolated にする",
   "remove-link": "この結線を削除",
+  "split-source": "入力ごとにソースを分ける",
 };
 
 /**

@@ -8,11 +8,13 @@ import {
   mediaSourceOnStream,
   remoteGuestOnBuiltins,
   satelliteRooms,
+  sharedSourceStrip,
   speakerphoneMeeting,
   testContext,
   twoJoinsInOneHall,
 } from "./fixtures";
 import { lint } from "./lint";
+import { applyFix } from "./mutations";
 import type { SetupDoc } from "./schema";
 
 const HALL = { id: "sp_hall", kind: "acoustic", label: "メインホール" } as const;
@@ -1000,6 +1002,74 @@ describe("two ports that are one source", () => {
   it("says nothing about a group that has only one medium in it", () => {
     const found = lint(mediaSourceOnStream(), testContext());
     expect(ruleIds(found)).not.toContain("partial-source");
+  });
+});
+
+// §12.1's defect, which the port templates made *writable* rather than
+// impossible: nothing stops a second cable landing on a strip that already has
+// one, and the picture is deliberately a wiring surface that allows it.
+describe("two things on one source", () => {
+  it("reports the strip the hall and the meeting are sharing", () => {
+    const found = lint(sharedSourceStrip(), testContext());
+    const finding = found.find((d) => d.ruleId === "shared-source-strip");
+
+    expect(finding?.severity).toBe("warn");
+    // Both ends, named: which strip, and what is on it besides the obvious one.
+    expect(finding?.message).toContain("会場の音");
+    expect(finding?.message).toContain("Google Meet");
+    expect(finding?.nodeIds).toContain("n_obs");
+    expect(finding?.linkIds).toEqual(["l5"]);
+  });
+
+  it("says nothing when each has a row of its own", () => {
+    expect(ruleIds(lint(hybridMonitorMix(), testContext()))).not.toContain("shared-source-strip");
+  });
+
+  // A mixer channel is a socket on a box. Two cables into it is a different
+  // mistake with a different answer, and there is no "add another one" here.
+  it("says nothing about two cables into one mixer channel", () => {
+    const found = lint(
+      doc({
+        nodes: [
+          { id: "n_mic", deviceId: "d_mic1", spaceId: "sp_hall" },
+          { id: "n_mic2", deviceId: "d_mic2", spaceId: "sp_hall" },
+          { id: "n_mixer", deviceId: "d_mixer" },
+        ],
+        spaces: [HALL],
+        links: [
+          { id: "l1", from: ["n_mic", "out"], to: ["n_mixer", "ch1"] },
+          { id: "l2", from: ["n_mic2", "out"], to: ["n_mixer", "ch1"] },
+        ],
+      }),
+      testContext(),
+    );
+
+    expect(ruleIds(found)).not.toContain("shared-source-strip");
+  });
+
+  // The fix-one-and-re-run loop, on the rule whose whole purpose is to be
+  // repaired: the capture moves to a row of its own and nothing else changes.
+  it("clears once the capture is given a source of its own", () => {
+    const ctx = testContext();
+    const before = sharedSourceStrip();
+    const reported = lint(before, ctx);
+    const finding = reported.find((d) => d.ruleId === "shared-source-strip");
+    const fix = finding?.fixes?.[0];
+    if (!fix) throw new Error("expected a split-source fix");
+
+    const after = applyFix(before, fix, ctx);
+    const obs = after.nodes.find((node) => node.id === "n_obs");
+
+    expect(obs?.ports?.map((port) => port.key)).toEqual(["audio_src:1", "audio_src:2"]);
+    // The device selection keeps the strip; the capture is what moved.
+    expect(obs?.assignments).toContainEqual({ port: "audio_src:1", hostPort: "usb_in" });
+    expect(after.links.find((link) => link.id === "l5")?.to).toEqual(["n_obs", "audio_src:2"]);
+
+    const found = ruleIds(lint(after, ctx));
+    expect(found).not.toContain("shared-source-strip");
+    // And nothing new: a fix that trades one finding for another is not a fix,
+    // which is the bar `linter.spec.ts` holds every one of them to.
+    expect(found.filter((id) => !ruleIds(reported).includes(id))).toEqual([]);
   });
 });
 

@@ -1,6 +1,8 @@
 import type { Diagnostic, Rule } from "../diagnostics";
+import { describeNode } from "../diagnostics";
 import type { BuiltGraph, ResolvedNode } from "../graph";
-import { isPortWired, nodeLabel } from "../graph";
+import { isPortWired, nodeLabel, portVertexId } from "../graph";
+import { isTemplate } from "../ports";
 import { spaceNeedOf } from "../types";
 
 const UNKNOWN_REFERENCE = "unknown-reference";
@@ -309,9 +311,77 @@ export const structureRules: Rule = (graph, ctx) => {
   }
 
   diagnostics.push(...bypassRules(graph));
+  diagnostics.push(...sharedStripRules(graph));
 
   return diagnostics;
 };
+
+/**
+ * Two things arriving at one source of a broadcast app.
+ *
+ * A source is one row of the mixer and a row goes where its matrix cells say,
+ * so two feeds sharing an instance can never be sent to different places. §12.1
+ * is what that costs: with the hall mics and the meeting on one strip the
+ * standard hybrid layout — monitor the meeting into the room, keep the hall mics
+ * out of it — cannot be written down at all. Nothing is wrong with the document
+ * yet, which is why this is a warning: the damage is done later, on the day
+ * somebody turns MONITOR on for that row and the hall goes with it.
+ *
+ * Scoped to instances of an expandable template, because that is exactly where
+ * "make another one" is an operation that exists. A mixer channel is a socket on
+ * a box; two cables into it is a different mistake with a different answer, and
+ * this rule has nothing to offer for it.
+ */
+function sharedStripRules(graph: BuiltGraph): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+
+  for (const resolved of graph.nodes.values()) {
+    for (const instance of resolved.node.ports ?? []) {
+      if (!isTemplate(resolved.model, instance.template)) continue;
+      const port = resolved.ports.get(instance.key);
+      if (!port || port.direction !== "in") continue;
+
+      // A device selection and a capture both feed a strip, and either can be
+      // the second one. Space hops are not feeds — a source hears no room.
+      const feeds = (graph.incoming.get(portVertexId(resolved.id, instance.key)) ?? []).filter(
+        (edge) => edge.kind === "cable" || edge.kind === "capture" || edge.kind === "host",
+      );
+      if (feeds.length < 2) continue;
+
+      const senders = new Set<string>();
+      const nodeIds = new Set<string>([resolved.id]);
+      for (const edge of feeds) {
+        const vertex = graph.vertices.get(edge.from);
+        if (vertex?.type !== "port") continue;
+        senders.add(describeNode(graph, vertex.nodeId));
+        nodeIds.add(vertex.nodeId);
+      }
+
+      diagnostics.push({
+        ruleId: "shared-source-strip",
+        severity: "warn",
+        message: `${nodeLabel(resolved)} の ${port.label} に ${[...senders].join(
+          " / ",
+        )} が同時に入っています。ソース 1 つは 1 行なので、このままではどれか 1 つだけをモニターや配信から外すことができません。ソースを分けてください。`,
+        nodeIds: [...nodeIds],
+        linkIds: feeds
+          .map((edge) => edge.linkId)
+          .filter((linkId): linkId is string => Boolean(linkId)),
+        // The fix moves cables and captures; a strip fed only by device
+        // selections is a hand-edited document it could not repair.
+        ...(feeds.some((edge) => edge.linkId)
+          ? {
+              fixes: [
+                { kind: "split-source" as const, nodeId: resolved.id, portKey: instance.key },
+              ],
+            }
+          : {}),
+      });
+    }
+  }
+
+  return diagnostics;
+}
 
 /**
  * A cable drawn straight into an app, past the machine it runs on.
