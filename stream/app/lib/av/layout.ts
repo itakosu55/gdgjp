@@ -246,7 +246,10 @@ const ELBOW = 14;
  * loop reads as a second, dashed border on the box instead of as a cable.
  */
 const ESCAPE = 18;
-/** The lanes under the diagram that the loop-closing edges take. */
+/**
+ * The lanes a loop-closing edge returns in — under its own room when both ends
+ * are in one (`returnBands`), and under the whole picture when it is not.
+ */
 const RETURN_LANE_GAP = 30;
 const RETURN_LANE_PITCH = 14;
 /**
@@ -303,6 +306,15 @@ const NEST_GAP = 20;
 const CROSS_CLEAR = 6;
 /** Breathing room between a place frame and the boxes it holds. */
 const FRAME_PAD = 14;
+/**
+ * Between a place frame and the outermost line drawn inside it.
+ *
+ * Less than `FRAME_PAD`, for the same reason `NEST_CLEAR` is less than
+ * `NEST_PAD`: a box needs room for its own border and its label, a line needs
+ * only not to be touching. A return riser left on the border reads as a cable
+ * leaving the room, which is the opposite of what a return that comes home is.
+ */
+const FRAME_CLEAR = 6;
 /** Room above a place frame's content for its caption. */
 const FRAME_HEADER = 20;
 /** Between two places, which are stacked as horizontal lanes. */
@@ -400,6 +412,9 @@ export function layoutGraph(graph: BuiltGraph, options: LayoutOptions = {}): Lay
   // what a machine has to be big enough for. Ranking cares about neither.
   const forwardIds = new Set(forward.map((edge) => edge.id));
   sizeHosts(boxes, edges, column, forwardIds);
+  // Which returns come home to the room they left, counted before any row is
+  // assigned so the room can be given the rows to hold them.
+  const bands = returnBands(edges, boxes, places, column, forwardIds);
 
   const { items, segments } = insertDummies(keys, forward, column);
   const lanes = laneOfEach(boxes, items, forward, places);
@@ -418,9 +433,9 @@ export function layoutGraph(graph: BuiltGraph, options: LayoutOptions = {}): Lay
     withinLane,
     options.order,
   );
-  const y = assignRows(order, boxes, segments, lanes, laneOrder(lanes, places), places);
+  const y = assignRows(order, boxes, segments, lanes, laneOrder(lanes, places), places, bands);
 
-  return buildLayout(places, boxes, edges, forwardIds, column, order, y);
+  return buildLayout(places, boxes, edges, forwardIds, column, order, y, bands);
 }
 
 /**
@@ -871,6 +886,76 @@ function leftMargin(
 }
 
 /**
+ * The strip of rows at the bottom of one room that its own returns run in.
+ *
+ * Counted before the rows are ordered and placed while they are being assigned,
+ * because only `separateLanes` knows where a lane ends up — and only it knows it
+ * with the dummy rows counted in, so a return lane cannot land on a row a
+ * crossing is already using.
+ */
+type ReturnBand = { lanes: number; top: number };
+
+/** The lowest lane of a band, which is what the room has to be tall enough for. */
+function bandBottom(band: ReturnBand): number {
+  return band.top + (band.lanes - 1) * RETURN_LANE_PITCH;
+}
+
+/**
+ * How many returns each room has to hold, which is how much room it is given.
+ *
+ * A hall feeding its own microphones is a loop that closes inside one room, and
+ * run under the whole picture it descends past every room in between — so the
+ * reader follows it out of the frame, along the bottom of the page, and back in,
+ * to be told something that never left. Under the room it left, it is read where
+ * the loop is.
+ *
+ * So a room grows a lane per return it holds, exactly as it grows a row per
+ * coupling (`sizeSpaces`), a machine grows a lane per cable (`sizeHosts`) and
+ * the page margin grows one per riser (`leftMargin`): the strip is sized by what
+ * it has to carry. Counting through `routeOf` is what keeps it sized for the
+ * lines that actually arrive in it.
+ *
+ * The *root* boxes decide the room, because a join is drawn inside the laptop it
+ * runs on and the laptop is what is standing somewhere. A meeting is not a place
+ * (`placeKeyOf`), so a return out of one is between two rooms however few rooms
+ * are on the page, and keeps the lanes under the picture.
+ */
+function returnBands(
+  edges: readonly DrawnEdge[],
+  boxes: Map<string, Box>,
+  places: Map<string, Place>,
+  column: Map<string, number>,
+  forwardIds: ReadonlySet<string>,
+): Map<string, ReturnBand> {
+  const bands = new Map<string, ReturnBand>();
+  for (const edge of edges) {
+    const from = boxes.get(edge.from);
+    const to = boxes.get(edge.to);
+    if (!from || !to) continue;
+    if (routeOf(edge, from, to, boxes, column, forwardIds).shape !== "back") continue;
+    const room = sharedRoom(from, to, boxes);
+    if (room === null || !places.has(room)) continue;
+    const band = bands.get(room) ?? { lanes: 0, top: 0 };
+    band.lanes += 1;
+    bands.set(room, band);
+  }
+  return bands;
+}
+
+/**
+ * The room both ends of a line are standing in, or `null` when they are not.
+ *
+ * Read twice — once to size the bands and once to hand out their lanes — and
+ * both readings have to agree, for the same reason `standoffs` is shared: a band
+ * sized for a return that ends up under the picture leaves a gap nothing runs
+ * in, and a return sent to a band nobody counted lands on the room below.
+ */
+function sharedRoom<T extends Box>(from: T, to: T, boxes: Map<string, T>): string | null {
+  const room = rootOf(from, boxes).placeKey;
+  return room !== null && room === rootOf(to, boxes).placeKey ? room : null;
+}
+
+/**
  * Re-points every edge at the machine that holds its end.
  *
  * Ranking a nested app on its own put OBS out among the speakers, and the old
@@ -1293,6 +1378,7 @@ function assignRows(
   lanes: Map<string, string>,
   order: readonly string[],
   places: Map<string, Place>,
+  bands: Map<string, ReturnBand>,
 ): Map<string, number> {
   const heightOf = (key: string) => boxes.get(key)?.height ?? DUMMY_HEIGHT;
   const y = new Map<string, number>();
@@ -1338,7 +1424,7 @@ function assignRows(
     }
   }
 
-  separateLanes(columns, y, heightOf, lanes, order, places);
+  separateLanes(columns, y, heightOf, lanes, order, places, bands);
   return y;
 }
 
@@ -1352,6 +1438,10 @@ function assignRows(
  * bounding box round a room's members would otherwise swallow a box from the
  * room next door that happened to be laid out between them.
  *
+ * It is also where a room's return band is placed, because this is the one
+ * point that knows where a lane ended up — and knows it with the dummy rows
+ * counted in, which measuring the floor off the boxes alone would miss.
+ *
  * With one lane and no frame this is the shared-origin shift the layout has
  * always ended with.
  */
@@ -1362,6 +1452,7 @@ function separateLanes(
   lanes: Map<string, string>,
   order: readonly string[],
   places: Map<string, Place>,
+  bands: Map<string, ReturnBand>,
 ): void {
   const extents = new Map<string, { top: number; bottom: number }>();
   for (const items of columns) {
@@ -1386,7 +1477,17 @@ function separateLanes(
     const framed = places.has(lane);
     const head = framed ? FRAME_HEADER + FRAME_PAD : 0;
     shifts.set(lane, cursor + head - extent.top);
-    cursor += head + (extent.bottom - extent.top) + (framed ? FRAME_PAD : 0) + PLACE_GAP;
+    cursor += head + (extent.bottom - extent.top);
+    // A room's own returns run below everything in it, so the room is that much
+    // taller and the next one starts below them rather than through them. The
+    // tail is what the border will take (`computeFrames`), so two rooms are the
+    // same distance apart whether or not either of them holds a return.
+    const band = bands.get(lane);
+    if (band) {
+      band.top = cursor + RETURN_LANE_GAP;
+      cursor += RETURN_LANE_GAP + (band.lanes - 1) * RETURN_LANE_PITCH + FRAME_CLEAR;
+    } else if (framed) cursor += FRAME_PAD;
+    cursor += PLACE_GAP;
   }
 
   for (const [key, value] of y) {
@@ -1452,6 +1553,7 @@ function buildLayout(
   column: Map<string, number>,
   columns: readonly string[][],
   y: Map<string, number>,
+  bands: Map<string, ReturnBand>,
 ): Layout {
   const slots = columnSlots(columns, boxes, leftMargin(edges, boxes, column, forwardIds));
   const placed = new Map<string, PlacedBox>();
@@ -1516,10 +1618,14 @@ function buildLayout(
 
   let bottom = PADDING;
   for (const node of nodes) bottom = Math.max(bottom, node.y + node.height);
+  // Past the lowest room band too: a room whose returns run below the last box
+  // in the picture would otherwise share its lowest lane with the first of the
+  // lanes under the picture, and two returns would be drawn as one.
+  for (const band of bands.values()) bottom = Math.max(bottom, bandBottom(band));
 
-  const laid = routeEdges(edges, placed, forwardIds, slots, column, y, bottom);
+  const laid = routeEdges(edges, placed, forwardIds, bands, slots, column, y, bottom);
 
-  const frames = computeFrames(places, placed);
+  const frames = computeFrames(places, placed, bands, laid);
   const order = columns.flat();
   let width = PADDING;
   let height = bottom + PADDING;
@@ -1566,10 +1672,18 @@ function nestedInside(inner: Box, outer: Box, boxes: Map<string, Box>): boolean 
  * A frame round everything in one place.
  *
  * Only top-level boxes are measured: what is nested is already inside the box
- * that holds it. A place holding nothing but its own air gets no frame — a
+ * that holds it, and its own return band, which is drawn inside the room for the
+ * same reason it is routed there — a line that closes a loop in this room is
+ * part of this room. A place holding nothing but its own air gets no frame — a
  * border round one pill states nothing the pill does not.
  */
-function computeFrames(places: Map<string, Place>, placed: Map<string, PlacedBox>): LayoutFrame[] {
+function computeFrames(
+  places: Map<string, Place>,
+  placed: Map<string, PlacedBox>,
+  bands: Map<string, ReturnBand>,
+  laid: readonly LayoutEdge[],
+): LayoutFrame[] {
+  const reaches = returnReach(placed, bands, laid);
   const members = new Map<string, PlacedBox[]>();
   for (const box of placed.values()) {
     if (box.parentKey !== null || box.placeKey === null) continue;
@@ -1594,18 +1708,61 @@ function computeFrames(places: Map<string, Place>, placed: Map<string, PlacedBox
       right = Math.max(right, box.x + box.width);
       bottom = Math.max(bottom, box.y + box.height);
     }
+    // The room's own returns are the room's, and a riser standing on the border
+    // reads as one that left it — which is the one thing this line does not do.
+    const reach = reaches.get(place.key);
+    const x = Math.min(left - FRAME_PAD, (reach?.left ?? left) - FRAME_CLEAR);
+    const y = Math.min(top - FRAME_PAD, (reach?.top ?? top) - FRAME_CLEAR) - FRAME_HEADER;
+    const far = Math.max(right + FRAME_PAD, (reach?.right ?? right) + FRAME_CLEAR);
+    const low = Math.max(bottom + FRAME_PAD, (reach?.bottom ?? bottom) + FRAME_CLEAR);
 
     frames.push({
       key: place.key,
       label: place.label,
       spaceKinds: place.spaceKinds,
-      x: left - FRAME_PAD,
-      y: top - FRAME_PAD - FRAME_HEADER,
-      width: right - left + 2 * FRAME_PAD,
-      height: bottom - top + 2 * FRAME_PAD + FRAME_HEADER,
+      x,
+      y,
+      width: far - x,
+      height: low - y,
     });
   }
   return frames;
+}
+
+/**
+ * How far each room's own returns reach, which its frame has to hold too.
+ *
+ * Measured off the routed points rather than worked out again, because the
+ * risers are shared strips — how far out one stands depends on what else is
+ * claiming that strip — and a frame drawn from a second guess at that would be
+ * the one thing on the page that is not where the lines are.
+ */
+function returnReach(
+  placed: Map<string, PlacedBox>,
+  bands: Map<string, ReturnBand>,
+  laid: readonly LayoutEdge[],
+): Map<string, { left: number; top: number; right: number; bottom: number }> {
+  const reaches = new Map<string, { left: number; top: number; right: number; bottom: number }>();
+  for (const edge of laid) {
+    if (!edge.back) continue;
+    const from = placed.get(edge.from);
+    const to = placed.get(edge.to);
+    if (!from || !to) continue;
+    const room = sharedRoom(from, to, placed);
+    if (room === null || !bands.has(room)) continue;
+    for (const point of edge.points) {
+      const reach = reaches.get(room);
+      if (!reach) {
+        reaches.set(room, { left: point.x, top: point.y, right: point.x, bottom: point.y });
+        continue;
+      }
+      reach.left = Math.min(reach.left, point.x);
+      reach.top = Math.min(reach.top, point.y);
+      reach.right = Math.max(reach.right, point.x);
+      reach.bottom = Math.max(reach.bottom, point.y);
+    }
+  }
+  return reaches;
 }
 
 /**
@@ -1743,7 +1900,7 @@ type Plan = {
   shape: EdgeShape;
   /** The box drawn inside the other one, for a `nested` line. */
   inner: PlacedBox | null;
-  /** The lane under the picture a `back` line returns in. */
+  /** The lane a `back` line returns in — its own room's band, or the picture's. */
   lane: number;
   /** How far off its face the line stands, at each end. */
   out: number;
@@ -1774,6 +1931,7 @@ function routeEdges(
   edges: readonly DrawnEdge[],
   placed: Map<string, PlacedBox>,
   forwardIds: ReadonlySet<string>,
+  bands: Map<string, ReturnBand>,
   slots: readonly Slot[],
   column: Map<string, number>,
   y: Map<string, number>,
@@ -1792,7 +1950,7 @@ function routeEdges(
     plans.push({ edge, from, to, a, b, shape, inner, lane: 0, out: ELBOW, into: ELBOW, cross: 0 });
   }
 
-  settleLanes(plans, placed, bottom);
+  settleLanes(plans, placed, bands, bottom);
 
   return plans.map((plan) => ({
     id: plan.edge.id,
@@ -1921,13 +2079,18 @@ type Claim = {
  * stay in the order the reader last saw them; everything else is derived from
  * where the line already is.
  */
-function settleLanes(plans: readonly Plan[], placed: Map<string, PlacedBox>, bottom: number): void {
+function settleLanes(
+  plans: readonly Plan[],
+  placed: Map<string, PlacedBox>,
+  bands: Map<string, ReturnBand>,
+  bottom: number,
+): void {
   const claims: Claim[] = [];
-  let lane = 0;
+  const taken = new Map<string, number>();
 
   for (const plan of plans) {
     if (plan.shape === "back") {
-      plan.lane = bottom + RETURN_LANE_GAP + lane++ * RETURN_LANE_PITCH;
+      plan.lane = returnLane(plan, placed, bands, bottom, taken);
       // Both ends: two returns into one box's face collide on the way up out of
       // the lanes exactly as two leaving one room collide on the way down.
       // Deeper lane, further out — then no riser crosses a lane it is not in.
@@ -1964,6 +2127,30 @@ function settleLanes(plans: readonly Plan[], placed: Map<string, PlacedBox>, bot
 
   settle(claims);
   crossings(plans);
+}
+
+/**
+ * Which lane a return runs in: its own room's band, or the ones under the whole
+ * picture when it does not come home to the room it left.
+ *
+ * The bands stack down the page in room order and the picture's own lanes sit
+ * below the last of them, so a deeper lane is still further down whichever it
+ * came from — which is what lets `escapeMachine` keep ordering the risers by it
+ * and be sure no riser crosses a lane it is not in.
+ */
+function returnLane(
+  plan: Plan,
+  placed: Map<string, PlacedBox>,
+  bands: Map<string, ReturnBand>,
+  bottom: number,
+  taken: Map<string, number>,
+): number {
+  const room = sharedRoom(plan.from, plan.to, placed);
+  const band = room === null ? undefined : bands.get(room);
+  const key = band ? (room ?? NO_PLACE) : NO_PLACE;
+  const index = taken.get(key) ?? 0;
+  taken.set(key, index + 1);
+  return (band ? band.top : bottom + RETURN_LANE_GAP) + index * RETURN_LANE_PITCH;
 }
 
 /**
@@ -2007,10 +2194,10 @@ function escapeMachine(
 }
 
 /** The top-level box a line's end is drawn inside, which is itself for most. */
-function rootOf(box: PlacedBox, placed: Map<string, PlacedBox>): PlacedBox {
+function rootOf<T extends Box>(box: T, boxes: Map<string, T>): T {
   let current = box;
   while (current.parentKey !== null) {
-    const parent = placed.get(current.parentKey);
+    const parent = boxes.get(current.parentKey);
     if (!parent) break;
     current = parent;
   }
@@ -2272,9 +2459,10 @@ function routeSibling(a: Anchor, b: Anchor, cross: number, out: number, into: nu
 }
 
 /**
- * The return path of a loop, routed in its own lane under the diagram. A howl
- * is the normal input here, so the edge that closes it deserves to be the one
- * edge you cannot miss — which it is not while six of them descend on one line.
+ * The return path of a loop, routed in its own lane under the room it closes in
+ * (`returnBands`) or under the diagram when it closes across rooms. A howl is
+ * the normal input here, so the edge that closes it deserves to be the one edge
+ * you cannot miss — which it is not while six of them descend on one line.
  */
 function routeBack(a: Anchor, b: Anchor, lane: number, out: number, into: number): Point[] {
   const ax = a.side === "right" ? a.x + out : a.x - out;

@@ -317,8 +317,26 @@ component draws the `points` it is handed and owns no geometry.
   innermost stands where a single riser has always stood and the picture moves right instead of the
   lines moving together. `PADDING` past the outermost, which is what the width and height already
   leave past theirs.
-- `separateLanes` shifts each place's members as a rigid body onto its own band of rows;
-  `computeFrames` draws the border, and a place holding only its own air gets none.
+- **A room holds the returns that come home to it** (`returnBands`): a loop closing inside one room —
+  a hall feeding the microphone standing in it — used to descend past every room in between to the
+  lanes under the picture, so the reader followed a line out of the frame, along the bottom of the
+  page and back in, to be told about something that never left. It runs in a band at the bottom of
+  its own room instead, and the room grows a lane per return it holds exactly as it grows a row per
+  coupling and a machine grows a lane per cable. `sharedRoom` reads the *root* boxes, so a join is
+  wherever its laptop is standing, and both the counting and the handing out read it for the same
+  reason `standoffs` is shared. A meeting is not a place (`placeKeyOf`), so a return out of one is
+  between two rooms however few are on the page and keeps the lanes under the picture; `buildLayout`
+  drops those below the lowest band, or the last room's returns and the first of the page's would be
+  drawn as one line.
+- `separateLanes` shifts each place's members as a rigid body onto its own band of rows and reserves
+  the strip its returns run in — it is the one pass that knows where a lane ended up, and knows it
+  with the dummy rows counted in, which measuring the floor off the boxes would miss.
+  `computeFrames` draws the border round both, and a place holding only its own air gets none. It
+  measures the returns off the routed points (`returnReach`), never off a second guess at where a
+  riser stands: how far out one stands depends on what else is claiming that strip, so a frame drawn
+  from anything but the lines would be the one thing on the page that is not where they are. The
+  border clears a line by `FRAME_CLEAR` and a box by `FRAME_PAD`, for the reason `NEST_CLEAR` is
+  less than `NEST_PAD` — and a riser left *on* the border reads as one leaving the room.
 - `computeBands` tints runs of columns sharing a role. **Three shapes say three things and must stay
   distinct: tint = role, border = place, box-in-box = machine runs the app.**
 - `joinRole` derives `software_conferencing`'s role from its wiring, counting only `cable` and

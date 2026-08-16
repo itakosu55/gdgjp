@@ -389,6 +389,89 @@ describe("layoutGraph", () => {
     });
   });
 
+  /**
+   * A loop that closes inside one room is a fact about that room, and used to be
+   * drawn under the whole picture like every other return: down past every room
+   * in between, along the bottom of the page, and back up again — so the reader
+   * follows a line out of the frame and home to say that nothing left it.
+   */
+  describe("where a return path runs", () => {
+    /** The frame a line's end is in, taken from the box it is drawn inside. */
+    function frameOfEnd(layout: ReturnType<typeof layoutOf>, key: string): string | null {
+      let node = nodeOf(layout, key);
+      while (node?.parentKey) node = nodeOf(layout, node.parentKey);
+      return node?.frameKey ?? null;
+    }
+
+    function returns(layout: ReturnType<typeof layoutOf>, home: boolean): LayoutEdge[] {
+      return layout.edges.filter((edge) => {
+        if (!edge.back) return false;
+        const from = frameOfEnd(layout, edge.from);
+        return (from !== null && from === frameOfEnd(layout, edge.to)) === home;
+      });
+    }
+
+    /** How far down a line reaches, which for a return is the lane it runs in. */
+    function lane(edge: LayoutEdge): number {
+      return Math.max(...edge.points.map((point) => point.y));
+    }
+
+    function floorOf(layout: ReturnType<typeof layoutOf>): number {
+      return Math.max(...layout.nodes.map((node) => node.y + node.height));
+    }
+
+    it("runs a return that comes home inside the room it left", () => {
+      const layout = layoutOf(satelliteRooms());
+      expect(layout.frames).toHaveLength(2);
+      for (const frame of layout.frames) {
+        const home = returns(layout, true).filter(
+          (edge) => frameOfEnd(layout, edge.from) === frame.key,
+        );
+        expect(home.length).toBeGreaterThan(0);
+        for (const edge of home) {
+          // Strictly inside, on every side: a riser left on the border reads as
+          // a cable leaving the room, which is what this one does not do.
+          for (const point of edge.points) {
+            expect(point.x).toBeGreaterThan(frame.x);
+            expect(point.x).toBeLessThan(frame.x + frame.width);
+            expect(point.y).toBeGreaterThan(frame.y);
+            expect(point.y).toBeLessThan(frame.y + frame.height);
+          }
+        }
+      }
+    });
+
+    // The case this is all for: a hall feeding the microphone standing in it.
+    it("stops taking a hall's return into its own mic under the picture", () => {
+      const layout = layoutOf(twoJoinsInOneHall());
+      const home = layout.edges.find(
+        (edge) => edge.from === "space:sp_hall" && edge.to === "n_mic",
+      );
+      expect(home?.back).toBe(true);
+      expect(home && lane(home)).toBeLessThan(floorOf(layout));
+    });
+
+    // A meeting is not a place (`placeKeyOf`), so a return out of one is between
+    // two rooms however few of them are on the page.
+    it("keeps a return that leaves its room under the whole picture", () => {
+      const layout = layoutOf(satelliteRooms());
+      const across = returns(layout, false);
+      expect(across.length).toBeGreaterThan(0);
+      for (const edge of across) expect(lane(edge)).toBeGreaterThan(floorOf(layout));
+    });
+
+    // The band is counted before the rows are assigned and handed out after, so
+    // a room sized for two returns that turns out to hold three would draw the
+    // third through the room below it.
+    it("gives every return in one room a lane of its own", () => {
+      for (const rig of [satelliteRooms, twoJoinsInOneHall, hybridMonitorMix]) {
+        const layout = layoutOf(rig());
+        const home = returns(layout, true);
+        expect(new Set(home.map(lane)).size).toBe(home.length);
+      }
+    });
+  });
+
   // Longest path alone put a device wherever the wiring led, and which edge got
   // cut to break a loop depended on the order the search happened to visit.
   describe("column bands", () => {
